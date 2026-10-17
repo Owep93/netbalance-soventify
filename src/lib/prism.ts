@@ -1,12 +1,15 @@
-// Sends each agent run to PRISM by Block Convey: one trace (prompt, summary, checks),
-// one span per model call and tool call, and one trajectory for path evaluation.
+// Sends each completed case to PRISM by Block Convey: one trace (input, outcome, checks),
+// one span per model call and tool call, and one trajectory for path evaluation. Works for
+// both the agent autopilot and the presenter clicking through.
 // Only free ingestion endpoints are called here. Paid PRISM actions (analysis, backfill,
 // narrative, generate-fix) are never called from code; a person decides on those.
 import { randomUUID } from "node:crypto";
+import type { CaseState } from "@/agent/case";
 import type { Check } from "@/agent/checks";
 import type { AgentRun } from "@/agent/run";
+import { formatUsd } from "@/core/money";
 
-export const AGENT_NAME = "GPU Recovery Agent";
+export const AGENT_NAME = "Netbalance Recovery Agent";
 
 export interface PrismResult {
   traceId: string;
@@ -26,27 +29,53 @@ const text = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 
 /** Builds the three PRISM payloads. Pure, so it can be tested without a network. */
 export function buildPrismPayloads(
-  run: AgentRun,
+  c: CaseState,
   checks: Check[],
   projectId: string,
   traceId: string,
+  agentRun: AgentRun | null = null,
   guardrails: GuardrailVerdict[] = [],
 ) {
-  const failed = checks.filter((c) => !c.passed);
-  const tokensIn = run.trace.reduce((n, e) => n + (e.tokensIn ?? 0), 0);
-  const tokensOut = run.trace.reduce((n, e) => n + (e.tokensOut ?? 0), 0);
-  const r = run.report?.reconciliation;
+  const events = c.trace;
+  const first = events[0]?.at ?? new Date().toISOString();
+  const last = events.at(-1);
+  const totalMs = last ? new Date(last.at).getTime() + last.ms - new Date(first).getTime() : 0;
+  const s = c.scenario;
+  const outcome = c.report
+    ? `Case ${s.caseId}: ${formatUsd(c.report.reconciliation.cashReceived)} cash received, ` +
+      `${formatUsd(c.report.reconciliation.outstanding)} outstanding, contribution ${formatUsd(c.report.comparison.selected.total)} ` +
+      `(+${formatUsd(c.report.comparison.improvement)}, ${c.report.comparison.improvementPct}%), carbon ${c.report.carbon.status}.`
+    : `Case ${s.caseId} not finished.`;
+  const run = {
+    model: agentRun?.model ?? "presenter (no model)",
+    prompt: agentRun?.prompt ?? { system: `Presenter-driven case ${s.caseId}`, user: `Coolant leak in ${s.rack.id}, ${s.rack.units.length} ${s.rack.model} GPUs` },
+    summary: agentRun?.summary || outcome,
+    startedAt: agentRun?.startedAt ?? first,
+    totalMs: agentRun?.totalMs ?? totalMs,
+    stoppedEarly: agentRun?.stoppedEarly ?? false,
+    unsupportedFigures: agentRun?.unsupportedFigures ?? [],
+    trace: events,
+  };
+  const failed = checks.filter((x) => !x.passed);
+  const tokensIn = events.reduce((n, e) => n + (e.tokensIn ?? 0), 0);
+  const tokensOut = events.reduce((n, e) => n + (e.tokensOut ?? 0), 0);
+  const r = c.reconciliation;
   const metadata = {
     simulated: true,
     checks_passed: checks.length - failed.length,
     checks_total: checks.length,
     failed_checks: failed.map((c) => `${c.area}: ${c.name}`),
     checks,
-    matched_receipts_cents: r?.matchedTotal ?? null,
-    expected_receipts_cents: r?.expectedTotal ?? null,
+    case_id: s.caseId,
+    driven_by: agentRun ? "agent autopilot" : "presenter",
+    cash_received_cents: r?.cashReceived ?? null,
+    expected_cash_cents: r?.expectedCash ?? null,
     all_settled: r?.allSettled ?? false,
-    carbon_status: run.report?.carbon.status ?? "pending",
-    avoided_kg_co2e: run.report?.carbon.kgCo2e ?? null,
+    contribution_cents: c.report?.comparison.selected.total ?? null,
+    carbon_status: c.report?.carbon.status ?? "pending",
+    avoided_kg_co2e: c.report?.carbon.kgCo2e ?? null,
+    credit_approval: c.transfer.approval ? { id: c.transfer.approval.id, approver: c.transfer.approval.approver, amount_cents: c.transfer.approval.amount } : null,
+    guard_events: c.guardEvents.map((g) => g.kind),
     unsupported_figures: run.unsupportedFigures,
     refused_steps: run.trace.filter((e) => e.kind === "tool" && !e.ok).map((e) => e.name),
     guardrails: guardrails.map((g) => ({ direction: g.direction, evaluated: g.evaluated, blocked: g.blocked, reason: g.reason })),
@@ -65,7 +94,7 @@ export function buildPrismPayloads(
     token_count_input: tokensIn,
     token_count_output: tokensOut,
     session_id: traceId,
-    agent_id: "gpu-recovery-agent",
+    agent_id: "netbalance-recovery-agent",
     agent_name: AGENT_NAME,
     metadata,
   };
@@ -107,7 +136,7 @@ export function buildPrismPayloads(
         token_count_input: e.tokensIn ?? null,
         token_count_output: e.tokensOut ?? null,
         model: e.kind === "model" ? e.name : null,
-        metadata: { seq: e.seq },
+        metadata: { seq: e.seq, actor: e.actor },
       })),
     ],
   };
@@ -116,7 +145,7 @@ export function buildPrismPayloads(
     project_id: projectId,
     conversation_id: traceId,
     request_id: traceId,
-    agent_id: "gpu-recovery-agent",
+    agent_id: "netbalance-recovery-agent",
     agent_name: AGENT_NAME,
     model: run.model,
     total_duration_ms: run.totalMs,
@@ -137,8 +166,9 @@ export function buildPrismPayloads(
 }
 
 export async function sendToPrism(
-  run: AgentRun,
+  c: CaseState,
   checks: Check[],
+  agentRun: AgentRun | null = null,
   guardrails: GuardrailVerdict[] = [],
 ): Promise<PrismResult> {
   const traceId = randomUUID();
@@ -149,7 +179,7 @@ export async function sendToPrism(
     return result;
   }
 
-  const payloads = buildPrismPayloads(run, checks, cfg.projectId, traceId, guardrails);
+  const payloads = buildPrismPayloads(c, checks, cfg.projectId, traceId, agentRun, guardrails);
   const post = async (name: keyof PrismResult["sent"], path: string, body: unknown) => {
     try {
       const res = await fetch(`${cfg.host}${path}`, {
@@ -235,7 +265,7 @@ export async function evaluateGuardrail(
         direction,
         messages: [{ role: direction === "input" ? "user" : "assistant", content }],
         trace_id: traceId,
-        agent_id: "gpu-recovery-agent",
+        agent_id: "netbalance-recovery-agent",
       }),
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -253,13 +283,15 @@ export function describeGuardrail(v: GuardrailVerdict): string {
   return v.blocked ? `${side}: blocked by PRISM guardrails` : `${side}: passed PRISM guardrails`;
 }
 
-/** Records an in-house guardrail block from the live call as a flagged PRISM trace. */
+/** Records an in-house guardrail event (a block, a hold, or an approval) as a PRISM trace. */
 export async function recordGuardrailBlock(opts: {
   callerText: string;
   reply: string;
   rule: string;
   reason: string;
   conversationId: string | null;
+  action?: "blocked" | "held" | "approved" | "refused";
+  agentName?: string;
 }): Promise<{ recorded: boolean; traceId: string; error?: string }> {
   const traceId = randomUUID();
   const cfg = config();
@@ -276,12 +308,12 @@ export async function recordGuardrailBlock(opts: {
         output_message: opts.reply,
         latency_ms: 0,
         session_id: opts.conversationId ?? traceId,
-        agent_id: "helix-support-line",
-        agent_name: "Helix Data Center Support Line (voice)",
+        agent_id: opts.agentName ? "netbalance-recovery-agent" : "helix-support-line",
+        agent_name: opts.agentName ?? "Helix Datacenter Support Line (voice)",
         metadata: {
           guardrail: opts.rule,
           guardrail_source: "in-house",
-          action: "blocked",
+          action: opts.action ?? "blocked",
           reason: opts.reason,
           simulated: true,
         },

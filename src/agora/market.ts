@@ -1,25 +1,37 @@
-// Simulated Agora reseller market for the demo. Listings, bids, sale, pickup, and payout
-// are all simulated and labeled as such. The agent and the /agora page share one store,
-// so the audience can watch the failed unit get listed, bid on, and sold.
+// Simulated Agora market for the demo. The listing, buyers, bids, sale, pickup, and payout
+// are all simulated and labeled as such. The agent, the presenter screens, and the /agora
+// page share one store, so the audience can watch the GPU lot get listed, bid on, and sold.
+// Agora compares offers on net proceeds (bid minus the buyer's shipping and handling), so a
+// lower headline bid can win.
 import { formatUsd, type Cents } from "@/core/money";
 
 export interface Bid {
   id: string;
   buyer: string;
-  amount: Cents;
+  gross: Cents;
+  fee: Cents;
+  net: Cents;
+  at: string;
+}
+
+export interface Sale {
+  bidId: string;
+  buyer: string;
+  gross: Cents;
+  fee: Cents;
+  net: Cents;
+  pickup: string;
   at: string;
 }
 
 export interface Listing {
   id: string;
   title: string;
-  serial: string;
   condition: string;
-  askingPrice: Cents;
-  feeRate: number;
+  serials: string[];
   status: "listed" | "sold";
   bids: Bid[];
-  sale: { bidId: string; buyer: string; price: Cents; fee: Cents; netPayout: Cents; pickup: string; at: string } | null;
+  sale: Sale | null;
   createdAt: string;
   simulated: true;
 }
@@ -28,11 +40,6 @@ export interface MarketEvent {
   at: string;
   listingId: string;
   text: string;
-}
-
-export interface SimulatedBuyer {
-  buyer: string;
-  amount: Cents;
 }
 
 export class AgoraMarket {
@@ -50,11 +57,11 @@ export class AgoraMarket {
     this.events.push({ at: new Date().toISOString(), listingId, text });
   }
 
-  createListing(input: Omit<Listing, "status" | "bids" | "sale" | "createdAt" | "simulated">): Listing {
+  createListing(input: { id: string; title: string; condition: string; serials: string[] }): Listing {
     if (this.listings.has(input.id)) throw new Error(`Listing ${input.id} already exists`);
     const listing: Listing = { ...input, status: "listed", bids: [], sale: null, createdAt: new Date().toISOString(), simulated: true };
     this.listings.set(listing.id, listing);
-    this.log(listing.id, `Listed ${listing.title} at ${formatUsd(listing.askingPrice)}`);
+    this.log(listing.id, `Listed ${listing.title}`);
     return listing;
   }
 
@@ -64,41 +71,38 @@ export class AgoraMarket {
     return listing;
   }
 
-  /** Simulated buyers place their bids. Only happens once per listing. */
-  collectBids(id: string, buyers: SimulatedBuyer[]): Bid[] {
+  /** Simulated buyers send their offers. Only happens once per listing. */
+  collectBids(id: string, offers: { buyer: string; gross: Cents; fee: Cents }[]): Bid[] {
     const listing = this.get(id);
     if (listing.status !== "listed") throw new Error(`Listing ${id} is already sold`);
     if (listing.bids.length === 0) {
-      for (const b of buyers) {
-        const bid = { id: `BID-${++this.bidSeq}`, buyer: b.buyer, amount: b.amount, at: new Date().toISOString() };
+      for (const o of offers) {
+        const bid = { id: `BID-${++this.bidSeq}`, ...o, net: o.gross - o.fee, at: new Date().toISOString() };
         listing.bids.push(bid);
-        this.log(id, `${b.buyer} bid ${formatUsd(b.amount)}`);
+        this.log(id, `${o.buyer} offered ${formatUsd(o.gross)}, less ${formatUsd(o.fee)} shipping: ${formatUsd(bid.net)} net`);
       }
     }
     return listing.bids;
   }
 
-  /** Accepts a bid. Agora only lets the seller take the highest bid. */
-  acceptBid(id: string, bidId: string): NonNullable<Listing["sale"]> {
+  bestNet(id: string): Bid | null {
+    const bids = this.get(id).bids;
+    return bids.length ? bids.reduce((a, b) => (b.net > a.net ? b : a)) : null;
+  }
+
+  /** Accepts an offer. Agora only lets the seller take the best net offer. */
+  acceptBid(id: string, bidId: string, pickup: string): Sale {
     const listing = this.get(id);
     if (listing.status === "sold") throw new Error(`Listing ${id} is already sold`);
     const bid = listing.bids.find((b) => b.id === bidId);
     if (!bid) throw new Error(`No bid ${bidId} on ${id}`);
-    const best = Math.max(...listing.bids.map((b) => b.amount));
-    if (bid.amount < best) throw new Error(`Bid ${bidId} is not the highest bid (${formatUsd(best)})`);
-
-    const fee = Math.round(bid.amount * listing.feeRate);
-    listing.sale = {
-      bidId,
-      buyer: bid.buyer,
-      price: bid.amount,
-      fee,
-      netPayout: bid.amount - fee,
-      pickup: "Courier pickup booked from the customer site (simulated)",
-      at: new Date().toISOString(),
-    };
+    const best = this.bestNet(id)!;
+    if (bid.net < best.net) {
+      throw new Error(`${bid.buyer} nets ${formatUsd(bid.net)}, less than ${best.buyer} at ${formatUsd(best.net)}. Accept the best net offer`);
+    }
+    listing.sale = { bidId, buyer: bid.buyer, gross: bid.gross, fee: bid.fee, net: bid.net, pickup, at: new Date().toISOString() };
     listing.status = "sold";
-    this.log(id, `Sold to ${bid.buyer} for ${formatUsd(bid.amount)}. Agora fee ${formatUsd(fee)}, payout ${formatUsd(bid.amount - fee)}`);
+    this.log(id, `Sold to ${bid.buyer}: ${formatUsd(bid.gross)} less ${formatUsd(bid.fee)} shipping, ${formatUsd(bid.net)} net. Pickup ${pickup}`);
     return listing.sale;
   }
 

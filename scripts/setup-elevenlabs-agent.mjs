@@ -36,7 +36,7 @@ const logIncident = {
       everyone_safe: { type: "boolean", description: "True if the caller confirmed everyone is safe" },
       rack_offline: { type: "boolean", description: "True if the caller confirmed the rack is powered off" },
       rack: { type: "string", description: "The affected rack, for example Rack 12" },
-      gpu_model: { type: "string", description: "The affected GPU model, for example HX80" },
+      gpu_model: { type: "string", description: "The affected GPU model, for example H100 80GB" },
       gpu_count: { type: "number", description: "How many GPUs are in the affected rack" },
       noticed: { type: "string", description: "When the problem was noticed, only if the caller said" },
       suspected_source: { type: "string", description: "Where the problem seems to come from, only if the caller said" },
@@ -47,7 +47,7 @@ const logIncident = {
 
 const firstMessage = "Helix Data Center Support. How can I help?";
 
-const prompt = `You are the support line for Helix Data Center Support. Callers run GPU racks in data centers.
+const prompt = `You are the support line for Helix Data Center Support. Callers run GPU racks in container data centers.
 Keep the call short. Use short, plain sentences.
 
 Call flow:

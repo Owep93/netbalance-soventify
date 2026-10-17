@@ -1,9 +1,8 @@
 import { avoidedCarbon, type AvoidedCarbon, type EmissionFactor } from "./carbon";
+import { compare, contribution, type Comparison } from "./contribution";
 import { energyBonus, type EnergyBonus } from "./energy";
-import { buildExpectedReceipts, reconcile, upgradeDelta, type Reconciliation } from "./ledger";
-import type { Cents } from "./money";
+import { reconcile, type CaseMoney, type Receipt, type Reconciliation } from "./ledger";
 import type { Scenario } from "./scenario";
-import { verifyProtectionPlan, type PlanVerification } from "./warranty";
 
 export interface Factors {
   manufacturing: EmissionFactor | null;
@@ -11,31 +10,28 @@ export interface Factors {
   grid: EmissionFactor | null;
 }
 
-export interface RecoveryReport {
-  simulated: boolean;
-  plan: PlanVerification;
-  upgradeDelta: Cents;
+export interface CfoReport {
   reconciliation: Reconciliation;
+  comparison: Comparison;
   carbon: AvoidedCarbon;
   energy: EnergyBonus;
 }
 
-/** The single view: three money flows reconciled plus the carbon record. */
-export function buildRecoveryReport(s: Scenario, factors: Factors): RecoveryReport {
-  const plan = verifyProtectionPlan(s.diagnostics, s.protectionPlan);
-  const expected = buildExpectedReceipts(s, plan.verified);
-
+/** The CFO view: money reconciled, contribution against the baseline, and the carbon record. */
+export function buildCfoReport(s: Scenario, m: CaseMoney, receipts: Receipt[], factors: Factors): CfoReport {
+  const baseline = contribution(s.offers.standard, s.gpuLot.baselineNet, 0);
+  const selected = contribution(m.offer, m.gpuSale?.net ?? 0, m.offer.financing?.referralFee ?? 0);
   return {
-    simulated: s.simulated,
-    plan,
-    upgradeDelta: upgradeDelta(s),
-    reconciliation: reconcile(expected, s.receipts),
+    reconciliation: reconcile(s, m, receipts),
+    comparison: compare(baseline, selected),
     carbon: avoidedCarbon({
-      weight: s.failedUnit.weight,
+      weight: s.gpuLot.weight,
       manufacturingFactor: factors.manufacturing,
       refurbishingFactor: factors.refurbishing,
-      treatmentRoute: `Refurbish and resell on ${s.resale.marketplace} (reuse)`,
-      baseline: `Manufacturing a new ${s.failedUnit.model}-class unit of the same weight`,
+      treatmentRoute: m.gpuSale
+        ? `Sold to ${m.gpuSale.buyer} for refurbishment or parts. Holds only if the buyer refurbishes the modules for reuse`
+        : "Not sold yet",
+      baseline: `Manufacturing ${s.rack.units.length} new GPU modules of the same total weight`,
     }),
     energy: energyBonus(s.energy, factors.grid),
   };

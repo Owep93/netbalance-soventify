@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GPU Recovery Agent",
-  description: "Reconciles warranty, replacement, and resale money flows with a sourced carbon record.",
+  title: "Netbalance: Revenue Growth Agent",
+  description: "Turns customer service events into new revenue and reconciled cash.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

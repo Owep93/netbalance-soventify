@@ -1,10 +1,12 @@
 # netbalance-soventify
 
-AI GPU Recovery Agent for the Money Talks 2 hackathon (Money Operations track).
+Netbalance: container datacenter recovery, for the Money Talks 2 hackathon (Money Operations track).
 
-A small AI company's data center GPU fails. The agent verifies the protection plan from
-diagnostics, issues a warranty credit, sells a more power-efficient replacement, resells the
-refurbished failed unit, and reconciles all three money flows plus a sourced carbon record.
+A coolant leak hits Rack 12 of a container datacenter. Six steps take it from the support call
+(live ElevenLabs voice) through a warranty check, a credit transfer that waits for human approval,
+a replacement sale with financing, a GPU lot sale on a simulated Agora market, and an automatic
+reconciliation, to the CFO outcome with a sourced EPA carbon record. A Nicrron agent can run the
+whole case on autopilot, and every finished case is traced and checked in PRISM.
 
 All demo data (companies, approvals, bids, pickup, meter readings, payments) is simulated.
 

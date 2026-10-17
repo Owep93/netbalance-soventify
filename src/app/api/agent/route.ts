@@ -1,62 +1,37 @@
-import { runChecks } from "@/agent/checks";
+import { getCase } from "@/agent/case";
 import { runAgent } from "@/agent/run";
-import { describeGuardrail, evaluateGuardrail, sendToPrism, type GuardrailVerdict } from "@/lib/prism";
-import { agora } from "@/agora/market";
-import type { IntakeReport } from "@/core/intake";
-import { scenario } from "@/core/scenario";
-import { fetchEpaFactors } from "@/lib/epa";
+import { caseContext, finishCase } from "@/lib/case-context";
 import { nicrronComplete, nicrronModel } from "@/lib/nicrron";
+import { describeGuardrail, evaluateGuardrail } from "@/lib/prism";
 
-// Streams one JSON line per agent step, then a final "done" line with the summary.
-export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { intake?: IntakeReport };
+// Agent autopilot: the Nicrron agent works the shared case. Streams one JSON line per step.
+export async function POST() {
+  const state = getCase();
+  if (state.autopilot.running) return Response.json({ error: "The autopilot is already running." }, { status: 409 });
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const send = (obj: unknown) => controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+      state.autopilot = { running: true, summary: null, unsupportedFigures: [] };
       try {
-        agora.reset();
-        const guardrails: GuardrailVerdict[] = [];
-
-        // Input guardrail: the caller's report is untrusted text going into the model.
-        if (body.intake) {
-          const v = await evaluateGuardrail("input", `${body.intake.company}. ${body.intake.symptoms}`);
-          guardrails.push(v);
-          send({ type: "guardrail", verdict: v, text: describeGuardrail(v) });
-          if (v.blocked) {
-            send({ type: "error", message: "PRISM guardrails blocked the caller's report, so the recovery agent did not run." });
-            return;
-          }
-        }
-
         const run = await runAgent({
-          scenario,
+          state,
           complete: nicrronComplete(),
           model: nicrronModel(),
-          ctx: { fetchEpa: () => fetchEpaFactors(scenario.customer.site.zip), agora },
-          intake: body.intake,
+          ctx: caseContext(state),
           onEvent: (event) => send({ type: "event", event }),
         });
-        // Output guardrail: the summary the customer will read.
+        // Output guardrail on the summary (PRISM; not evaluated on plans without guardrails).
         const out = await evaluateGuardrail("output", run.summary);
-        guardrails.push(out);
-        send({ type: "guardrail", verdict: out, text: describeGuardrail(out) });
+        send({ type: "guardrail", text: describeGuardrail(out), verdict: out });
         if (out.blocked) run.summary = "This summary was withheld by PRISM guardrails pending review.";
-
-        const checks = runChecks(run);
-        send({ type: "checks", checks });
-        const prism = await sendToPrism(run, checks, guardrails);
-        send({
-          type: "done",
-          summary: run.summary,
-          unsupportedFigures: run.unsupportedFigures,
-          stoppedEarly: run.stoppedEarly,
-          checks,
-          prism,
-        });
+        state.autopilot = { running: false, summary: run.summary, unsupportedFigures: run.unsupportedFigures };
+        const { checks, prism } = await finishCase(state, run);
+        send({ type: "done", summary: run.summary, stoppedEarly: run.stoppedEarly, checks, prism });
       } catch (e) {
         send({ type: "error", message: e instanceof Error ? e.message : String(e) });
       } finally {
+        state.autopilot.running = false;
         controller.close();
       }
     },

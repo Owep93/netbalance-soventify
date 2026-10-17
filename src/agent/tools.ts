@@ -1,43 +1,19 @@
-// The agent's tools. The LLM chooses which to call; every number comes from src/core.
-// Tools refuse to run out of order, so the model cannot, for example, issue a credit
-// before the protection plan is verified.
+// The case tools. The presenter's buttons, the voice call, and the Nicrron agent all act
+// through these, so they share one record and one set of rules. Every number comes from
+// src/core. Tools refuse to run out of order, and the warranty credit never moves between
+// accounts without a person's approval.
 import type OpenAI from "openai";
 import type { AgoraMarket } from "@/agora/market";
-import type { EpaResult } from "@/lib/epa";
-import { normalizeSerial } from "@/core/intake";
-import { buildExpectedReceipts, upgradeDelta, type Receipt } from "@/core/ledger";
+import { assessCoverage } from "@/core/coverage";
+import { checkTransfer } from "@/core/credit";
+import { logIncident } from "@/core/intake";
+import { buildExpectedReceipts, buildInvoice, reconcile, simulatedReceipts, type CaseMoney } from "@/core/ledger";
 import { formatUsd } from "@/core/money";
-import { buildRecoveryReport, type RecoveryReport } from "@/core/report";
-import type { Scenario } from "@/core/scenario";
-import { verifyProtectionPlan, type PlanVerification } from "@/core/warranty";
-
-export interface CaseState {
-  scenario: Scenario;
-  intake: { serial: string; symptoms: string; weightKg: number | null } | null;
-  diagnostics: Scenario["diagnostics"] | null;
-  plan: PlanVerification | null;
-  creditIssued: boolean;
-  replacementSold: boolean;
-  refurbished: boolean;
-  resaleSale: { netPayout: number } | null;
-  receipts: Receipt[] | null;
-  report: RecoveryReport | null;
-}
-
-export function newCase(scenario: Scenario): CaseState {
-  return {
-    scenario,
-    intake: null,
-    diagnostics: null,
-    plan: null,
-    creditIssued: false,
-    replacementSold: false,
-    refurbished: false,
-    resaleSale: null,
-    receipts: null,
-    report: null,
-  };
-}
+import { buildCfoReport } from "@/core/report";
+import type { OfferId } from "@/core/scenario";
+import type { EpaResult } from "@/lib/epa";
+import type { CaseState, GuardEvent } from "./case";
+import type { TraceEvent } from "./trace";
 
 export class ToolRefused extends Error {}
 
@@ -48,6 +24,10 @@ function need(condition: unknown, message: string): asserts condition {
 export interface ToolContext {
   fetchEpa: () => Promise<EpaResult>;
   agora: AgoraMarket;
+  // Waits until a person approves (or the wait times out). Autopilot only.
+  waitForApproval?: (state: CaseState) => Promise<boolean>;
+  // Records a guardrail event in PRISM. Returns the PRISM trace id, or null.
+  recordGuard?: (kind: GuardEvent["kind"], detail: string) => Promise<string | null>;
 }
 
 type Handler = (state: CaseState, args: Record<string, unknown>, ctx: ToolContext) => unknown | Promise<unknown>;
@@ -60,271 +40,267 @@ interface Tool {
 
 const noArgs = { type: "object", properties: {}, additionalProperties: false };
 
+function caseMoney(state: CaseState): CaseMoney {
+  const s = state.scenario;
+  return {
+    offer: s.offers[state.offer ?? "integrated"],
+    creditApplied: state.transfer.decision?.status === "applied" ? state.transfer.approval!.amount : 0,
+    gpuSale: state.sale ? { buyer: state.sale.buyer, gross: state.sale.gross, fee: state.sale.fee, net: state.sale.net } : null,
+  };
+}
+
+async function guard(state: CaseState, ctx: ToolContext, kind: GuardEvent["kind"], detail: string) {
+  const prismTraceId = ctx.recordGuard ? await ctx.recordGuard(kind, detail) : null;
+  state.guardEvents.push({ at: new Date().toISOString(), kind, detail, prismTraceId });
+}
+
 export const TOOLS: Record<string, Tool> = {
-  record_failure_report: {
-    description: "Record the customer's GPU failure report at intake, including the unit weight in kg.",
+  log_incident: {
+    description: "Log the incident reported on the support call and dispatch a technician.",
     parameters: {
       type: "object",
       properties: {
-        serial: { type: "string", description: "Serial number of the failed GPU" },
-        symptoms: { type: "string", description: "What the customer reported, in plain words" },
+        issue: { type: "string" },
+        everyone_safe: { type: "boolean" },
+        rack_offline: { type: "boolean" },
+        rack: { type: "string" },
+        gpu_model: { type: "string" },
+        gpu_count: { type: "number" },
       },
-      required: ["serial", "symptoms"],
+      required: ["issue", "everyone_safe", "rack_offline", "rack", "gpu_model"],
       additionalProperties: false,
     },
-    run(state, args) {
-      const s = state.scenario;
-      const raw = String(args.serial ?? "");
-      need(normalizeSerial(raw) === normalizeSerial(s.failedUnit.serial), `No unit with serial "${raw}" on file for ${s.customer.name}.`);
-      const serial = s.failedUnit.serial;
-      state.intake = { serial, symptoms: String(args.symptoms ?? ""), weightKg: s.failedUnit.weight?.value ?? null };
-      return {
-        customer: s.customer.name,
-        model: s.failedUnit.model,
-        serial,
-        unitWeight: s.failedUnit.weight
-          ? `${s.failedUnit.weight.value} kg (${s.failedUnit.weight.source})`
-          : "Not recorded. Carbon will stay pending.",
-      };
-    },
-  },
-
-  run_diagnostics: {
-    description: "Run diagnostics on the failed unit and return the report.",
-    parameters: noArgs,
-    run(state) {
-      need(state.intake, "Record the failure report first.");
-      state.diagnostics = state.scenario.diagnostics;
-      return { ...state.diagnostics, note: "Diagnostics run is simulated for the demo." };
-    },
-  },
-
-  verify_protection_plan: {
-    description: "Check the diagnostics report against the protection plan terms.",
-    parameters: noArgs,
-    run(state) {
-      need(state.diagnostics, "Run diagnostics first.");
-      state.plan = verifyProtectionPlan(state.diagnostics, state.scenario.protectionPlan);
-      return {
-        verified: state.plan.verified,
-        planId: state.plan.planId,
-        provider: state.scenario.protectionPlan.provider,
-        checks: state.plan.checks,
-      };
-    },
-  },
-
-  issue_warranty_credit: {
-    description: "Issue the warranty credit on the replacement invoice and file the reimbursement claim. Only allowed when the plan is verified.",
-    parameters: noArgs,
-    run(state) {
-      need(state.plan, "Verify the protection plan first.");
-      need(state.plan.verified, "The protection plan did not verify, so no credit can be issued.");
-      need(!state.creditIssued, "The warranty credit was already issued.");
-      state.creditIssued = true;
-      const s = state.scenario;
-      return {
-        credit: formatUsd(s.protectionPlan.credit),
-        appliesTo: s.ids.invoice,
-        reimbursementClaim: s.ids.warrantyClaim,
-        claimedFrom: s.protectionPlan.provider,
-        note: "The reimbursement pays for this credit. It is not extra revenue.",
-      };
-    },
-  },
-
-  quote_replacement: {
-    description: "Quote the like-for-like replacement and the newer, more power-efficient upgrade.",
-    parameters: noArgs,
-    run(state) {
-      need(state.plan, "Verify the protection plan first, so the quote knows whether a credit applies.");
-      const s = state.scenario;
-      const credit = state.creditIssued ? s.protectionPlan.credit : 0;
-      const due = (price: number) => formatUsd(price + s.replacement.installation - credit);
-      return {
-        likeForLike: { model: s.replacement.likeForLike.model, price: formatUsd(s.replacement.likeForLike.price), customerPays: due(s.replacement.likeForLike.price) },
-        upgrade: {
-          model: s.replacement.upgrade.model,
-          price: formatUsd(s.replacement.upgrade.price),
-          customerPays: due(s.replacement.upgrade.price),
-          why: s.replacement.upgrade.why,
-          kWhPerJob: { current: s.energy.baselineKwhPerJob, upgrade: s.energy.upgradeKwhPerJob },
-        },
-        upgradeCostsMore: formatUsd(upgradeDelta(s)),
-        installation: formatUsd(s.replacement.installation),
-        warrantyCredit: formatUsd(credit),
-      };
-    },
-  },
-
-  sell_replacement: {
-    description: "Sell the upgrade replacement with installation and issue the customer invoice.",
-    parameters: noArgs,
-    run(state) {
-      need(state.plan, "Verify the protection plan first.");
-      need(!state.plan.verified || state.creditIssued, "The plan verified, so issue the warranty credit before invoicing.");
-      need(!state.replacementSold, "The replacement was already sold.");
-      state.replacementSold = true;
-      const invoice = buildExpectedReceipts(state.scenario, state.plan.verified).find((e) => e.flow === "replacement")!;
-      return {
-        invoice: invoice.id,
-        lines: invoice.lines.map((l) => ({ item: l.label, amount: formatUsd(l.amount) })),
-        customerPays: formatUsd(invoice.amount),
-        note: "Customer approval and installation booking are simulated for the demo.",
-      };
-    },
-  },
-
-  refurbish_failed_unit: {
-    description: "Refurbish the failed unit so it can be resold.",
-    parameters: noArgs,
-    run(state) {
-      need(state.diagnostics, "Run diagnostics first.");
-      need(!state.refurbished, "The failed unit is already refurbished.");
-      state.refurbished = true;
-      return {
-        serial: state.scenario.failedUnit.serial,
-        condition: state.scenario.resale.condition,
-        note: "Refurbishment is simulated for the demo.",
-      };
-    },
-  },
-
-  list_on_agora: {
-    description: "List the refurbished unit for sale on the Agora reseller market.",
-    parameters: noArgs,
-    run(state, _args, ctx) {
-      need(state.refurbished, "Refurbish the failed unit first.");
-      const s = state.scenario;
-      const listing = ctx.agora.createListing({
-        id: s.resale.listingId,
-        title: `Refurbished ${s.failedUnit.model} GPU`,
-        serial: s.failedUnit.serial,
-        condition: s.resale.condition,
-        askingPrice: s.resale.askingPrice,
-        feeRate: s.resale.feeRate,
+    run(state, a) {
+      const record = logIncident(state.scenario, {
+        issue: String(a.issue ?? ""),
+        everyoneSafe: a.everyone_safe === true,
+        rackOffline: a.rack_offline === true,
+        rack: String(a.rack ?? ""),
+        gpuModel: String(a.gpu_model ?? ""),
+        gpuCount: Number.isFinite(Number(a.gpu_count)) ? Number(a.gpu_count) : null,
       });
+      state.incident = record;
       return {
-        marketplace: s.resale.marketplace,
-        listing: listing.id,
-        askingPrice: formatUsd(listing.askingPrice),
-        agoraFee: `${Math.round(listing.feeRate * 100)}% of the sale price`,
-        note: "Agora is a simulated marketplace for the demo.",
+        incident: record.incidentId,
+        priority: record.priority,
+        technician: record.technician,
+        onSiteBy: record.technicianOnSiteBy,
+        note: `${record.recordNote} Dispatch is simulated for the demo.`,
       };
     },
   },
 
-  check_agora_bids: {
-    description: "Check the bids on the Agora listing.",
+  attach_inspection_photo: {
+    description: "Attach the technician's inspection photo of the leak and GPU tray to the ticket.",
     parameters: noArgs,
-    run(state, _args, ctx) {
-      const id = state.scenario.resale.listingId;
-      need(ctx.agora.listings.has(id), "List the unit on Agora first.");
-      const bids = ctx.agora.collectBids(id, state.scenario.resale.simulatedBids);
+    run(state) {
+      need(state.incident, "Log the incident first.");
+      state.photoAttached = true;
+      return { attached: state.scenario.inspection.id, finding: state.scenario.inspection.finding, note: "Technician finding is simulated." };
+    },
+  },
+
+  assess_coverage: {
+    description: "Apply the warranty policy to the inspection finding: what is covered and for how much.",
+    parameters: noArgs,
+    run(state) {
+      need(state.photoAttached, "Attach the inspection photo first. Coverage waits for evidence.");
+      const c = assessCoverage(state.scenario, true);
+      state.coverage = c;
       return {
-        listing: id,
-        bids: bids.map((b) => ({ bidId: b.id, buyer: b.buyer, amount: formatUsd(b.amount) })),
-        note: "Bids come from simulated buyers.",
+        claim: c.claimId,
+        containerAndRacks: { covered: c.containerRacks.covered, credit: formatUsd(c.containerRacks.credit) },
+        gpus: { covered: c.gpus.covered, reason: c.gpus.reason },
       };
     },
   },
 
-  accept_agora_bid: {
-    description: "Accept a bid on the Agora listing. Agora only allows the highest bid.",
+  request_credit_transfer: {
+    description:
+      "Request moving the warranty credit from the warranty credit account to the customer's replacement order. It is held until a finance reviewer approves.",
     parameters: {
       type: "object",
-      properties: { bidId: { type: "string", description: "The bidId to accept" } },
-      required: ["bidId"],
+      properties: {
+        destination: { type: "string", description: "Destination account. The customer's replacement order unless told otherwise." },
+      },
       additionalProperties: false,
     },
-    run(state, args, ctx) {
-      const id = state.scenario.resale.listingId;
-      need(ctx.agora.listings.has(id), "List the unit on Agora first.");
-      need(ctx.agora.get(id).bids.length > 0, "Check the bids first.");
-      let sale;
+    async run(state, a, ctx) {
+      need(state.coverage, "Assess coverage first.");
+      const t = state.scenario.creditTransfer;
+      const req = { amount: state.coverage.containerRacks.credit, source: t.source, destination: String(a.destination || t.destination) };
+      const decision = checkTransfer(state.scenario, req, state.coverage.containerRacks.credit, state.transfer.approval);
+      state.transfer.decision = decision;
+      if (decision.status === "refused") {
+        await guard(state, ctx, "credit transfer refused", decision.reasons.join(" "));
+        throw new ToolRefused(decision.reasons.join(" "));
+      }
+      if (decision.status === "needs approval") {
+        await guard(state, ctx, "credit transfer held", `${formatUsd(req.amount)} ${req.source} to ${req.destination}: waiting for a finance reviewer`);
+        return { status: "held", amount: formatUsd(req.amount), from: req.source, to: req.destination, reason: decision.reasons[0] };
+      }
+      return { status: "applied", amount: formatUsd(req.amount), approval: decision.approval.id };
+    },
+  },
+
+  wait_for_credit_approval: {
+    description: "Wait for the finance reviewer to approve the held credit transfer, then apply it.",
+    parameters: noArgs,
+    async run(state, _a, ctx) {
+      need(state.transfer.decision, "Request the credit transfer first.");
+      if (state.transfer.decision.status !== "applied") {
+        const approved = ctx.waitForApproval ? await ctx.waitForApproval(state) : state.transfer.approval !== null;
+        need(approved && state.transfer.approval, "No approval yet. The credit stays where it is.");
+        const t = state.scenario.creditTransfer;
+        const req = { amount: state.coverage!.containerRacks.credit, source: t.source, destination: t.destination };
+        state.transfer.decision = checkTransfer(state.scenario, req, state.coverage!.containerRacks.credit, state.transfer.approval);
+        need(state.transfer.decision.status === "applied", "The approval does not match this transfer.");
+      }
+      return { status: "applied", approval: state.transfer.approval!.id, scope: state.transfer.approval!.scope };
+    },
+  },
+
+  present_offers: {
+    description: "Present the two replacement packages, with the warranty credit applied to either.",
+    parameters: noArgs,
+    run(state) {
+      need(state.transfer.decision?.status === "applied", "The warranty credit must be approved and applied first.");
+      state.offersShown = true;
+      return (["standard", "integrated"] as OfferId[]).map((id) => {
+        const inv = buildInvoice(state.scenario, { ...caseMoney(state), offer: state.scenario.offers[id] });
+        return {
+          offer: id,
+          name: state.scenario.offers[id].name,
+          invoiceTotal: formatUsd(inv.total),
+          funding: inv.funding.map((f) => `${f.label}: ${formatUsd(f.amount)}`),
+          customerCashUpfront: formatUsd(inv.customerCash),
+        };
+      });
+    },
+  },
+
+  accept_offer: {
+    description: "Record the customer's choice of replacement package.",
+    parameters: {
+      type: "object",
+      properties: { offer: { type: "string", enum: ["standard", "integrated"] } },
+      required: ["offer"],
+      additionalProperties: false,
+    },
+    run(state, a) {
+      need(state.offersShown, "Present the offers first.");
+      need(state.offer === null, "An offer was already accepted.");
+      const id = a.offer === "standard" ? "standard" : "integrated";
+      state.offer = id;
+      const inv = buildInvoice(state.scenario, caseMoney(state));
+      return {
+        accepted: state.scenario.offers[id].name,
+        invoice: inv.id,
+        total: formatUsd(inv.total),
+        customerCashUpfront: formatUsd(inv.customerCash),
+        note: "Customer approval and financing are simulated for the demo.",
+      };
+    },
+  },
+
+  list_gpu_lot_on_agora: {
+    description: "List the damaged GPU lot on the Agora reseller market.",
+    parameters: noArgs,
+    run(state, _a, ctx) {
+      need(state.offer, "Settle the replacement first.");
+      const s = state.scenario;
+      if (!state.gpuListed) {
+        ctx.agora.createListing({
+          id: s.gpuLot.saleId,
+          title: `${s.rack.units.length} x ${s.rack.model} GPU lot`,
+          condition: s.gpuLot.condition,
+          serials: s.rack.units.map((u) => u.serial),
+        });
+        state.gpuListed = true;
+      }
+      return { listing: s.gpuLot.saleId, condition: s.gpuLot.condition, note: "Agora is a simulated market for the demo." };
+    },
+  },
+
+  collect_bids: {
+    description: "Collect buyer offers on the GPU lot, with each buyer's shipping and handling.",
+    parameters: noArgs,
+    run(state, _a, ctx) {
+      need(state.gpuListed, "List the GPU lot on Agora first.");
+      const bids = ctx.agora.collectBids(state.scenario.gpuLot.saleId, state.scenario.gpuLot.bids);
+      state.bidsIn = true;
+      return bids.map((b) => ({ bidId: b.id, buyer: b.buyer, offer: formatUsd(b.gross), shipping: formatUsd(b.fee), net: formatUsd(b.net) }));
+    },
+  },
+
+  accept_bid: {
+    description: "Accept a GPU lot offer and book pickup. Agora only allows the best net offer.",
+    parameters: {
+      type: "object",
+      properties: { bid_id: { type: "string" } },
+      required: ["bid_id"],
+      additionalProperties: false,
+    },
+    run(state, a, ctx) {
+      need(state.bidsIn, "Collect the bids first.");
+      const s = state.scenario;
       try {
-        sale = ctx.agora.acceptBid(id, String(args.bidId ?? ""));
+        state.sale = ctx.agora.acceptBid(s.gpuLot.saleId, String(a.bid_id ?? ""), `${s.gpuLot.pickupId}, ${s.gpuLot.pickupWindow}`);
       } catch (e) {
         throw new ToolRefused(e instanceof Error ? e.message : String(e));
       }
-      state.resaleSale = { netPayout: sale.netPayout };
-      // What we expect to receive comes from the actual sale, not the plan.
-      state.scenario = { ...state.scenario, resale: { ...state.scenario.resale, netPayout: sale.netPayout } };
       return {
-        listing: id,
-        buyer: sale.buyer,
-        salePrice: formatUsd(sale.price),
-        agoraFee: formatUsd(sale.fee),
-        netPayout: formatUsd(sale.netPayout),
-        pickup: sale.pickup,
-        note: "The sale, pickup, and payout are simulated for the demo.",
+        buyer: state.sale.buyer,
+        offer: formatUsd(state.sale.gross),
+        shipping: formatUsd(state.sale.fee),
+        net: formatUsd(state.sale.net),
+        pickup: state.sale.pickup,
+        note: "The sale and pickup are simulated for the demo.",
       };
     },
   },
 
-  collect_payments: {
-    description: "Collect the customer payment, the warranty reimbursement, and the Agora payout.",
+  reconcile_transactions: {
+    description: "Collect the simulated payments and reconcile every transaction against its evidence.",
     parameters: noArgs,
     run(state) {
-      need(state.replacementSold, "Sell the replacement first.");
-      need(state.resaleSale, "Sell the failed unit on Agora first.");
-      const s = state.scenario;
-      const open = new Set(buildExpectedReceipts(s, state.creditIssued).map((e) => e.id));
-      state.receipts = [
-        ...s.receipts.filter((r) => open.has(r.reference) && r.reference !== s.resale.listingId),
-        {
-          id: "RCPT-AGORA",
-          payer: s.resale.marketplace,
-          reference: s.resale.listingId,
-          amount: state.resaleSale.netPayout,
-          receivedOn: new Date().toISOString().slice(0, 10),
-          simulated: true,
-        },
-      ];
+      need(state.sale, "Sell the GPU lot first.");
+      const m = caseMoney(state);
+      state.receipts = simulatedReceipts(buildExpectedReceipts(state.scenario, m), state.scenario.date);
+      const r = reconcile(state.scenario, m, state.receipts);
+      state.reconciliation = r;
       return {
-        received: state.receipts.map((r) => ({ from: r.payer, reference: r.reference, amount: formatUsd(r.amount) })),
-        note: "Payments are simulated for the demo.",
+        transactions: r.transactions.map((t) => ({ name: t.title, amount: formatUsd(t.amount), reconciled: t.complete })),
+        cashReceived: formatUsd(r.cashReceived),
+        outstanding: formatUsd(r.outstanding),
+        note: "Cash received is not profit. The four transaction amounts must not be added together. Payments are simulated.",
       };
     },
   },
 
-  reconcile_and_record_carbon: {
-    description: "Reconcile all three money flows and build the carbon record from EPA factors fetched now.",
+  build_cfo_report: {
+    description: "Build the CFO outcome: contribution against the baseline, and the carbon record from EPA factors fetched now.",
     parameters: noArgs,
-    async run(state, _args, ctx) {
-      need(state.receipts, "Collect payments first.");
+    async run(state, _a, ctx) {
+      need(state.reconciliation?.allSettled, "Reconcile every transaction first.");
       const epa = await ctx.fetchEpa();
-      const s = { ...state.scenario, receipts: state.receipts };
-      const report = buildRecoveryReport(s, epa.factors);
+      state.epaErrors = epa.errors;
+      const report = buildCfoReport(state.scenario, caseMoney(state), state.receipts!, epa.factors);
       state.report = report;
-      const r = report.reconciliation;
-      const kg = (n: number | null) => (n === null ? "pending" : `${n.toFixed(n < 1 ? 2 : 1)} kg CO2e`);
+      const kg = (n: number | null) => (n === null ? "pending" : `${n.toFixed(1)} kg CO2e`);
+      const c = report.comparison;
       return {
-        matchedReceipts: formatUsd(r.matchedTotal),
-        expectedReceipts: formatUsd(r.expectedTotal),
-        outstanding: formatUsd(r.outstanding),
-        settlements: r.settlements.map((x) => ({ reference: x.expected.id, payer: x.expected.payer, expected: formatUsd(x.expected.amount), status: x.status })),
-        valueSold: { replacement: formatUsd(r.salesValue.replacement), resale: formatUsd(r.salesValue.resale) },
-        receiptsAreNotProfit: true,
+        contribution: { baseline: formatUsd(c.baseline.total), selected: formatUsd(c.selected.total), improvement: formatUsd(c.improvement), improvementPct: `${c.improvementPct}%` },
+        cashReceived: formatUsd(report.reconciliation.cashReceived),
+        outstanding: formatUsd(report.reconciliation.outstanding),
         carbon: {
           status: report.carbon.status,
           avoided: kg(report.carbon.kgCo2e),
-          manufacturingNewUnit: kg(report.carbon.manufacturing.kgCo2e),
-          refurbishingFailedUnit: kg(report.carbon.refurbishing.kgCo2e),
-          treatmentRoute: report.carbon.treatmentRoute,
-          baseline: report.carbon.baseline,
-          pendingReasons: report.carbon.pendingReasons,
-          sources: [report.carbon.manufacturing.factor, report.carbon.refurbishing.factor]
-            .filter((f) => f !== null)
-            .map((f) => `${f.source.authority}, ${f.source.edition}, ${f.category}`),
+          manufacturingNew: kg(report.carbon.manufacturing.kgCo2e),
+          refurbishing: kg(report.carbon.refurbishing.kgCo2e),
+          condition: report.carbon.treatmentRoute,
         },
-        energy: {
-          avoidedPerMonth: `${report.energy.avoidedKwhPerMonth.toLocaleString("en-US")} kWh, ${formatUsd(report.energy.avoidedCostPerMonth)}`,
-          avoidedCarbonPerMonth: report.energy.carbon.kgCo2ePerMonth === null
-            ? "pending"
-            : `${Math.round(report.energy.carbon.kgCo2ePerMonth).toLocaleString("en-US")} kg CO2e`,
-          status: report.energy.carbon.status,
-        },
+        energy: `${report.energy.avoidedKwhPerMonth.toLocaleString("en-US")} kWh and ${formatUsd(report.energy.avoidedCostPerMonth)} avoided per month`,
         fetchErrors: epa.errors,
       };
     },
@@ -334,3 +310,40 @@ export const TOOLS: Record<string, Tool> = {
 export const TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = Object.entries(TOOLS).map(
   ([name, t]) => ({ type: "function", function: { name, description: t.description, parameters: t.parameters } }),
 );
+
+/** Runs one tool on the case and records it in the trace. Refusals are recorded, not thrown. */
+export async function runTool(
+  state: CaseState,
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  actor: TraceEvent["actor"],
+): Promise<TraceEvent> {
+  const t0 = Date.now();
+  let output: unknown;
+  let ok = true;
+  try {
+    const tool = TOOLS[name];
+    if (!tool) throw new ToolRefused(`Unknown tool ${name}`);
+    output = await tool.run(state, args, ctx);
+  } catch (e) {
+    if (!(e instanceof ToolRefused)) throw e;
+    ok = false;
+    output = { refused: e.message };
+  }
+  const event: TraceEvent = {
+    seq: state.trace.length + 1,
+    at: new Date(t0).toISOString(),
+    kind: "tool",
+    actor,
+    name,
+    input: args,
+    output,
+    ok,
+    ms: Date.now() - t0,
+  };
+  state.trace.push(event);
+  state.updatedAt = new Date().toISOString();
+  return event;
+}
+
