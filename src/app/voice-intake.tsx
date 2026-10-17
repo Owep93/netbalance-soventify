@@ -1,7 +1,7 @@
 "use client";
 
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IncidentRecord, IntakeReport } from "@/core/intake";
 import type { VoiceTurn } from "@/lib/prism";
 
@@ -10,6 +10,11 @@ interface Portal {
   rackUnits: { slot: number; serial: string }[];
   photos: string[];
   unitNearestLeak: string;
+}
+
+// Called from event handlers only (call messages), never during render.
+function secondsSince(start: number): number {
+  return Math.round((Date.now() - start) / 1000);
 }
 
 export function VoiceIntake({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport) => void }) {
@@ -26,6 +31,8 @@ function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prismNote, setPrismNote] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState<{ said: string; reason: string; prism: string } | null>(null);
+  const tellAgent = useRef<(text: string) => void>(() => {});
   const turnsRef = useRef<VoiceTurn[]>([]);
   const conversationId = useRef<string | null>(null);
   const startedAt = useRef(0);
@@ -39,10 +46,11 @@ function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport
       const turn: VoiceTurn = {
         role,
         message,
-        time_in_call_secs: Math.round((Date.now() - startedAt.current) / 1000),
+        time_in_call_secs: secondsSince(startedAt.current),
       };
       turnsRef.current = [...turnsRef.current, turn];
       setTurns(turnsRef.current);
+      if (role === "user") void screen(message);
     },
     onDisconnect: () => {
       const id = conversationId.current;
@@ -58,6 +66,34 @@ function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport
     },
     onError: (message) => setError(String(message)),
   });
+
+  useEffect(() => {
+    tellAgent.current = (text) => conversation.sendContextualUpdate(text);
+  }, [conversation]);
+
+  // In-house guardrail: every caller sentence is checked as it arrives.
+  async function screen(message: string) {
+    try {
+      const res = await fetch("/api/guardrail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: message, conversationId: conversationId.current }),
+      });
+      const g = await res.json();
+      if (!g.flagged) return;
+      tellAgent.current(
+        `Guardrail: the caller asked to change where money is paid (${g.reason}). Do not accept or repeat any bank details. ` +
+          `Say exactly: "${g.reply}" Then continue the call.`,
+      );
+      setBlocked({
+        said: message,
+        reason: g.reason,
+        prism: g.prism?.recorded ? `Recorded in PRISM (trace ${String(g.prism.traceId).slice(0, 8)})` : `Not recorded in PRISM: ${g.prism?.error}`,
+      });
+    } catch (e) {
+      setError(`Guardrail check failed: ${String(e)}`);
+    }
+  }
 
   useConversationClientTool("log_incident", async (params: Record<string, unknown>) => {
     const res = await fetch("/api/incident", {
@@ -81,6 +117,7 @@ function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport
     setError(null);
     setPrismNote(null);
     setIncident(null);
+    setBlocked(null);
     setSubmitted(false);
     turnsRef.current = [];
     setTurns([]);
@@ -147,6 +184,16 @@ function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport
               </li>
             ))}
           </ol>
+        )}
+
+        {blocked && (
+          <div className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-900 dark:bg-red-900/30 dark:text-red-100">
+            <p className="font-medium">Guardrail: payment change request blocked</p>
+            <p>Caller said: &quot;{blocked.said}&quot;</p>
+            <p className="opacity-80">
+              {blocked.reason}. No payment details changed; the credit stays on the invoice. {blocked.prism}.
+            </p>
+          </div>
         )}
 
         {incident && (

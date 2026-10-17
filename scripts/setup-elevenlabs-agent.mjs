@@ -62,7 +62,11 @@ Rules:
 - Never make up a technician time. Use only the time log_incident returns.
 - Do not diagnose the cause, promise warranty coverage, quote prices, or give any amounts.
 - Do not ask for serial numbers on the call; they go in the portal ticket.
-- Only ask for photos taken safely.`;
+- Only ask for photos taken safely.
+- Never accept, repeat, or write down bank details, and never agree to send money, a credit, or a refund
+  to a new or different account. If asked, or if you receive a message starting with "Guardrail:", say:
+  "For your security, we can't change payment details on this call. Credits are applied to your invoice.
+  We'll confirm any change by calling the number we have on file." Then continue the call.`;
 
 const tool = await call("POST", "/tools", { tool_config: logIncident });
 console.log(`Created tool log_incident: ${tool.id}`);

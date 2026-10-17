@@ -66,6 +66,13 @@ Every carbon number follows these rules:
 - The browser gets a signed URL from `/api/voice/session`; the key never reaches the client.
   The transcript goes to PRISM `/api/voice/turns` when the call ends.
 - The key needs ElevenLabs Agents read and write permissions.
+- In-house guardrail (`src/core/guardrail.ts`, route `/api/guardrail`): every caller sentence
+  is checked as it arrives. A request to send money to a new or different account, or bank
+  details read out, is blocked: the voice agent gets a "Guardrail:" note and gives the fixed
+  reply, the page shows the block, and PRISM gets a flagged trace. It runs in our code, so it
+  works on any PRISM plan. Credits only ever go on the invoice.
+- If the dev server serves an old copy of a changed file (a route says a function "is not a
+  function"), restart it.
 
 ## PRISM (Block Convey)
 - Each run sends a trace, spans, and a trajectory (`src/lib/prism.ts`), with the checks in

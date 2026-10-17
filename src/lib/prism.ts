@@ -252,3 +252,44 @@ export function describeGuardrail(v: GuardrailVerdict): string {
   if (!v.evaluated) return `${side}: not evaluated by PRISM guardrails (${v.reason ?? "no reason given"})`;
   return v.blocked ? `${side}: blocked by PRISM guardrails` : `${side}: passed PRISM guardrails`;
 }
+
+/** Records an in-house guardrail block from the live call as a flagged PRISM trace. */
+export async function recordGuardrailBlock(opts: {
+  callerText: string;
+  reply: string;
+  rule: string;
+  reason: string;
+  conversationId: string | null;
+}): Promise<{ recorded: boolean; traceId: string; error?: string }> {
+  const traceId = randomUUID();
+  const cfg = config();
+  if (!cfg) return { recorded: false, traceId, error: "PRISM is not configured" };
+  try {
+    const res = await fetch(`${cfg.host}/api/traces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-PRISMtrace-Key": cfg.key },
+      body: JSON.stringify({
+        project_id: cfg.projectId,
+        trace_id: traceId,
+        model: "in-house-guardrail",
+        input_messages: [{ role: "user", content: opts.callerText }],
+        output_message: opts.reply,
+        latency_ms: 0,
+        session_id: opts.conversationId ?? traceId,
+        agent_id: "helix-support-line",
+        agent_name: "Helix Data Center Support Line (voice)",
+        metadata: {
+          guardrail: opts.rule,
+          guardrail_source: "in-house",
+          action: "blocked",
+          reason: opts.reason,
+          simulated: true,
+        },
+      }),
+    });
+    if (!res.ok) return { recorded: false, traceId, error: `HTTP ${res.status}` };
+    return { recorded: true, traceId };
+  } catch (e) {
+    return { recorded: false, traceId, error: e instanceof Error ? e.message : String(e) };
+  }
+}
