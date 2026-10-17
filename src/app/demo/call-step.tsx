@@ -61,7 +61,9 @@ function CallInner({ c, act }: { c: CaseState; act: Act }) {
       conversationId.current = id;
       startedAt.current = Date.now();
     },
-    onMessage: ({ role, message }) => {
+    onMessage: ({ role, message: raw }) => {
+      // ElevenLabs tone tags like "[concerned]" shape the voice; keep them out of the transcript.
+      const message = raw.replace(/\[[a-z ]{2,30}\]\s*/gi, "").trim();
       const turn: VoiceTurn = { role, message, time_in_call_secs: secondsSince(startedAt.current) };
       turnsRef.current = [...turnsRef.current, turn];
       setTurns(turnsRef.current);
