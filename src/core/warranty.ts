@@ -22,6 +22,7 @@ export function verifyProtectionPlan(
 ): PlanVerification {
   const inTerm = diagnostics.failureDate >= plan.start && diagnostics.failureDate <= plan.end;
   const covered = plan.coveredCategories.includes(diagnostics.failureCategory);
+  const externalLiquid = diagnostics.liquidDamage && diagnostics.liquidSource !== "unit defect";
 
   const checks: PlanCheck[] = [
     {
@@ -40,11 +41,15 @@ export function verifyProtectionPlan(
       detail: `"${diagnostics.failureCategory}" ${covered ? "is" : "is not"} in the covered list`,
     },
     {
-      label: "No physical or liquid damage",
-      passed: !diagnostics.physicalDamage && !diagnostics.liquidDamage,
-      detail: diagnostics.physicalDamage || diagnostics.liquidDamage
-        ? "Diagnostics found damage the plan excludes"
-        : "Diagnostics found no excluded damage",
+      label: "No excluded damage",
+      passed: !diagnostics.physicalDamage && !externalLiquid,
+      detail: diagnostics.physicalDamage
+        ? "Diagnostics found physical damage, which the plan excludes"
+        : externalLiquid
+          ? "Diagnostics found liquid from an outside source, which the plan excludes"
+          : diagnostics.liquidDamage
+            ? "Liquid came from the unit's own defective fitting, a covered defect, not outside liquid damage"
+            : "Diagnostics found no excluded damage",
     },
   ];
 

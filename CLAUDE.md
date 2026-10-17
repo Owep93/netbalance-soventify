@@ -2,7 +2,11 @@
 
 ## Project
 AI GPU Recovery Agent. Money Talks 2 hackathon, Money Operations track. One-day build.
-A small AI company's data center GPU fails. The agent: takes the failure report, verifies
+Story: Halcyon Compute calls Helix Data Center Support about a coolant leak in Rack 12
+(eight HX80 GPUs). Diagnostics trace it to a cracked factory cooling fitting on one HX80
+(slot 5); the other seven pass. A leak from the unit's own defective part is a covered
+defect, not excluded liquid damage. Seller name in the app is Helix GPU Support.
+The agent: takes the failure report, verifies
 the protection plan from diagnostics, issues a $12,000 warranty credit, sells a $22,000
 newer and more power-efficient replacement ($4,000 upgrade over the $18,000 like-for-like
 unit, $500 installation, $10,500 collected), refurbishes and resells the failed unit
@@ -30,7 +34,7 @@ Every carbon number follows these rules:
    and show avoided energy cost next to avoided carbon.
 
 ## Sponsor tools (judging checks usage via an AI agent)
-- ElevenLabs: voice agent for the failure report call and booking.
+- ElevenLabs: voice agent for the support call (incident logging and technician dispatch).
 - Nicrron x Ninoo: model gateway (one API key, 65+ models). All agent LLM calls go
   through it: orchestration, diagnostic and policy interpretation, upgrade explanations.
 - PRISM by Block Convey: traces agent actions; tests coverage, calculations, settlement
@@ -49,14 +53,18 @@ Every carbon number follows these rules:
   figures that no tool returned (`unsupportedFigures`).
 - Keys live in `.env.local` (gitignored). `.env.example` lists the variables.
 
-## ElevenLabs voice intake
-- Agent "GPU Recovery Intake" was created by `scripts/setup-elevenlabs-agent.mjs` (Claude Sonnet
-  5.5, two client tools: `open_recovery_case`, `book_installation`). Its id is
-  `ELEVENLABS_AGENT_ID` in `.env.local`. The "Netbalance CFO" agent on the account is unrelated;
-  leave it alone.
-- The browser gets a signed URL from `/api/voice/session`; the API key never reaches the client.
-  `open_recovery_case` checks the serial via `/api/intake`, then starts the recovery agent with
-  what the caller said. The transcript goes to PRISM `/api/voice/turns` when the call ends.
+## ElevenLabs voice support line
+- Agent "Helix Data Center Support Line" (`ELEVENLABS_AGENT_ID` in `.env.local`) is set up by
+  `scripts/setup-elevenlabs-agent.mjs`, which updates that agent in place. Rerun it after
+  changing the call script. The "Netbalance CFO" agent on the account is unrelated; leave it.
+- Call script: greeting "Helix Data Center Support. How can I help?", safety question, then
+  `log_incident` (client tool, `/api/incident`) and "Incident logged. A technician will be
+  on-site at Rack 12 by 2:00 PM today. Please upload photos and serial numbers to your portal
+  ticket." The technician time comes from `scenario.dispatch`, never from the model.
+- After the call, the simulated portal ticket (serials for all eight units, photos, unit
+  nearest the leak) is submitted on the page, which starts the recovery agent.
+- The browser gets a signed URL from `/api/voice/session`; the key never reaches the client.
+  The transcript goes to PRISM `/api/voice/turns` when the call ends.
 - The key needs ElevenLabs Agents read and write permissions.
 
 ## PRISM (Block Convey)
@@ -64,6 +72,11 @@ Every carbon number follows these rules:
   `src/agent/checks.ts` (coverage, calculation, settlement, carbon claims, house rules) as metadata.
 - Auth header is `X-PRISMtrace-Key`, not Bearer. Start any investigation with
   `GET /api/setup-doctor?project_id=...`. Full route list: `/openapi.json` (needs the header).
+- Guardrails: `evaluateGuardrail` checks the caller's report (input) before the agent runs and
+  the customer summary (output) after. The project's Free plan is not entitled, so PRISM
+  answers `evaluated: false` and fails open; the UI must say "not evaluated", never "passed".
+  On a plan with guardrails the same calls enforce the project's rules with no code change.
+  PRISM cannot veto tool calls; our tools' order checks do that.
 - Reads and ingestion are free. Analysis, backfill, narrative, and generate-fix spend credits:
   never call them without stating the cost and getting a yes. Check
   `GET /api/credits/balance?org_id=...` first. A 402 means out of credits; stop, do not retry.

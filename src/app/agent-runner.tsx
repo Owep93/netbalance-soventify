@@ -43,9 +43,11 @@ export function AgentRunner() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<RunRecord[]>([]);
+  const [guardrails, setGuardrails] = useState<{ text: string; blocked: boolean; evaluated: boolean }[]>([]);
 
   async function run(intake?: IntakeReport) {
     setEvents([]);
+    setGuardrails([]);
     setDone(null);
     setError(null);
     setRunning(true);
@@ -67,6 +69,8 @@ export function AgentRunner() {
         for (const line of lines.filter(Boolean)) {
           const msg = JSON.parse(line);
           if (msg.type === "event") setEvents((prev) => [...prev, msg.event]);
+          else if (msg.type === "guardrail")
+            setGuardrails((prev) => [...prev, { text: msg.text, blocked: msg.verdict.blocked, evaluated: msg.verdict.evaluated }]);
           else if (msg.type === "done") {
             setDone(msg);
             setHistory((h) => [
@@ -94,7 +98,7 @@ export function AgentRunner() {
 
   return (
     <section className="rounded-xl border border-black/10 p-5 dark:border-white/15">
-      <VoiceIntake onCaseOpened={(report) => void run(report)} />
+      <VoiceIntake onPortalSubmit={(report) => void run(report)} />
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Agent run</h2>
@@ -128,6 +132,19 @@ export function AgentRunner() {
         </ol>
       )}
       {running && <p className="mt-2 text-sm opacity-70">Working...</p>}
+
+      {guardrails.length > 0 && (
+        <ul className="mt-3 space-y-0.5 text-xs">
+          {guardrails.map((g, i) => (
+            <li
+              key={i}
+              className={g.blocked ? "text-red-700 dark:text-red-300" : g.evaluated ? "text-emerald-700 dark:text-emerald-300" : "opacity-70"}
+            >
+              {g.text}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {done && (
         <div className="mt-4 rounded-lg bg-black/[0.03] p-4 text-sm dark:bg-white/[0.05]">

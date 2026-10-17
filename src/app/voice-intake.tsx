@@ -2,27 +2,28 @@
 
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import { useRef, useState } from "react";
-import type { IntakeReport, IntakeMatch } from "@/core/intake";
+import type { IncidentRecord, IntakeReport } from "@/core/intake";
 import type { VoiceTurn } from "@/lib/prism";
 
-interface Booking {
-  slot: string;
-  contact: string;
-  technician: string;
+interface Portal {
+  customer: string;
+  rackUnits: { slot: number; serial: string }[];
+  photos: string[];
+  unitNearestLeak: string;
 }
 
-export function VoiceIntake({ onCaseOpened }: { onCaseOpened: (report: IntakeReport) => void }) {
+export function VoiceIntake({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport) => void }) {
   return (
     <ConversationProvider>
-      <VoiceLine onCaseOpened={onCaseOpened} />
+      <SupportLine onPortalSubmit={onPortalSubmit} />
     </ConversationProvider>
   );
 }
 
-function VoiceLine({ onCaseOpened }: { onCaseOpened: (report: IntakeReport) => void }) {
+function SupportLine({ onPortalSubmit }: { onPortalSubmit: (report: IntakeReport) => void }) {
   const [turns, setTurns] = useState<VoiceTurn[]>([]);
-  const [caseOpened, setCaseOpened] = useState<string | null>(null);
-  const [booking, setBooking] = useState<Booking | null>(null);
+  const [incident, setIncident] = useState<{ record: IncidentRecord; portal: Portal } | null>(null);
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prismNote, setPrismNote] = useState<string | null>(null);
   const turnsRef = useRef<VoiceTurn[]>([]);
@@ -58,39 +59,29 @@ function VoiceLine({ onCaseOpened }: { onCaseOpened: (report: IntakeReport) => v
     onError: (message) => setError(String(message)),
   });
 
-  useConversationClientTool("open_recovery_case", async (params: Partial<IntakeReport>) => {
-    const res = await fetch("/api/intake", {
+  useConversationClientTool("log_incident", async (params: Record<string, unknown>) => {
+    const res = await fetch("/api/incident", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    const { report, match } = (await res.json()) as { report: IntakeReport; match: IntakeMatch };
-    if (!match.ok) return JSON.stringify({ opened: false, reason: match.reason });
-    setCaseOpened(`${match.customer}, ${match.model} serial ${match.serial}`);
-    onCaseOpened({ ...report, serial: match.serial });
+    const body = (await res.json()) as { record: IncidentRecord; portal: Portal };
+    setIncident(body);
     return JSON.stringify({
-      opened: true,
-      customer: match.customer,
-      unit: `${match.model}, serial ${match.serial}`,
-      next: "The recovery agent is now working the case on screen.",
+      logged: true,
+      incidentId: body.record.incidentId,
+      priority: body.record.priority,
+      rack: body.record.report.rack,
+      technicianOnSiteBy: body.record.technicianOnSiteBy,
+      note: body.record.recordNote,
     });
-  });
-
-  useConversationClientTool("book_installation", (params: { preferred_time?: string; contact_name?: string }) => {
-    const b: Booking = {
-      slot: params.preferred_time || "next available slot",
-      contact: params.contact_name || "the site contact",
-      technician: "NetBalance field technician",
-    };
-    setBooking(b);
-    return JSON.stringify({ confirmed: true, ...b, note: "This booking is simulated for the demo." });
   });
 
   async function start() {
     setError(null);
     setPrismNote(null);
-    setCaseOpened(null);
-    setBooking(null);
+    setIncident(null);
+    setSubmitted(false);
     turnsRef.current = [];
     setTurns([]);
     try {
@@ -104,51 +95,110 @@ function VoiceLine({ onCaseOpened }: { onCaseOpened: (report: IntakeReport) => v
     }
   }
 
+  function submitPortal() {
+    if (!incident) return;
+    const r = incident.record.report;
+    const p = incident.portal;
+    setSubmitted(true);
+    onPortalSubmit({
+      company: p.customer,
+      serial: p.unitNearestLeak,
+      symptoms:
+        `${r.issue}. ` +
+        (r.noticed ? `Noticed ${r.noticed}. ` : "") +
+        (r.suspectedSource ? `Appears to come from ${r.suspectedSource}. ` : "") +
+        `${r.rack}, ${r.gpuCount ?? p.rackUnits.length} ${r.gpuModel} GPUs. ` +
+        `Everyone safe: ${r.everyoneSafe ? "yes" : "not confirmed"}. Rack offline: ${r.rackOffline ? "yes" : "not confirmed"}. ` +
+        `Portal upload: serials for all ${p.rackUnits.length} units and ${p.photos.length} photos; the unit nearest the leak is ${p.unitNearestLeak}.`,
+    });
+  }
+
   const live = conversation.status === "connected" || conversation.status === "connecting";
 
   return (
-    <div className="mb-5 rounded-lg border border-black/10 p-4 dark:border-white/15">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="font-medium">Voice intake (ElevenLabs)</p>
-          <p className="text-sm opacity-70">
-            Call the recovery line and report the failed GPU. Serial on file: GX4-23-00871.
-          </p>
+    <div className="mb-5 flex flex-col gap-4">
+      <div className="rounded-lg border border-black/10 p-4 dark:border-white/15">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-medium">Helix Data Center Support line (ElevenLabs voice)</p>
+            <p className="text-sm opacity-70">Call in and report the problem with Rack 12.</p>
+          </div>
+          <button
+            onClick={live ? () => conversation.endSession() : start}
+            className={`rounded-lg px-4 py-2 text-sm font-medium ${
+              live ? "bg-red-600 text-white" : "border border-black/20 dark:border-white/25"
+            }`}
+          >
+            {conversation.status === "connecting" ? "Connecting..." : live ? "End call" : "Call support"}
+          </button>
         </div>
-        <button
-          onClick={live ? () => conversation.endSession() : start}
-          className={`rounded-lg px-4 py-2 text-sm font-medium ${
-            live ? "bg-red-600 text-white" : "border border-black/20 dark:border-white/25"
-          }`}
-        >
-          {conversation.status === "connecting" ? "Connecting..." : live ? "End call" : "Call the recovery line"}
-        </button>
+
+        {live && (
+          <p className="mt-2 text-xs opacity-70">
+            {conversation.status === "connected" ? (conversation.isSpeaking ? "Agent speaking" : "Listening") : "Connecting"}
+          </p>
+        )}
+
+        {turns.length > 0 && (
+          <ol className="mt-3 max-h-56 space-y-1 overflow-y-auto text-sm">
+            {turns.map((t, i) => (
+              <li key={i}>
+                <span className="font-medium">{t.role === "user" ? "Customer" : "Agent"}:</span> {t.message}
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {incident && (
+          <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+            <p className="font-medium">
+              Incident {incident.record.incidentId} logged, priority {incident.record.priority}
+            </p>
+            <p>
+              {incident.record.report.issue}. {incident.record.report.rack}, {incident.record.report.gpuModel}.
+              {incident.record.report.noticed && ` Noticed ${incident.record.report.noticed}.`}
+              {incident.record.report.suspectedSource && ` Near ${incident.record.report.suspectedSource}.`}
+            </p>
+            <p>Technician: {incident.record.technicianEta}</p>
+            <p className="opacity-80">{incident.record.recordNote}</p>
+          </div>
+        )}
+        {prismNote && <p className="mt-2 text-xs opacity-70">{prismNote}</p>}
+        {error && <p className="mt-2 text-sm text-red-700 dark:text-red-300">{error}</p>}
       </div>
 
-      {live && (
-        <p className="mt-2 text-xs opacity-70">
-          {conversation.status === "connected" ? (conversation.isSpeaking ? "Agent speaking" : "Listening") : "Connecting"}
-        </p>
+      {incident && (
+        <div className="rounded-lg border border-black/10 p-4 dark:border-white/15">
+          <p className="font-medium">Portal ticket {incident.record.incidentId}: photos and serial numbers (simulated)</p>
+          <p className="text-sm opacity-70">What {incident.portal.customer} uploads after the call.</p>
+          <div className="mt-3 grid gap-4 text-sm sm:grid-cols-2">
+            <div>
+              <p className="mb-1 font-medium">Serial numbers, {incident.record.report.rack}</p>
+              <ul className="font-mono text-xs">
+                {incident.portal.rackUnits.map((u) => (
+                  <li key={u.serial} className={u.serial === incident.portal.unitNearestLeak ? "font-bold" : ""}>
+                    Slot {u.slot}: {u.serial}
+                    {u.serial === incident.portal.unitNearestLeak && " (nearest the leak)"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 font-medium">Photos</p>
+              <ul className="list-disc pl-5 text-xs">
+                {incident.portal.photos.map((p) => <li key={p}>{p}</li>)}
+              </ul>
+            </div>
+          </div>
+          <button
+            onClick={submitPortal}
+            disabled={submitted}
+            className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+          >
+            {submitted ? "Uploaded to the portal ticket. Recovery agent started below" : "Submit to portal ticket"}
+          </button>
+        </div>
       )}
-
-      {turns.length > 0 && (
-        <ol className="mt-3 max-h-56 space-y-1 overflow-y-auto text-sm">
-          {turns.map((t, i) => (
-            <li key={i}>
-              <span className="font-medium">{t.role === "user" ? "Caller" : "Agent"}:</span> {t.message}
-            </li>
-          ))}
-        </ol>
-      )}
-
-      {caseOpened && <p className="mt-3 text-sm">Case opened for {caseOpened}. The recovery agent has started below.</p>}
-      {booking && (
-        <p className="mt-1 text-sm">
-          Installation booked: {booking.slot}, ask for {booking.contact}, {booking.technician}. (Simulated)
-        </p>
-      )}
-      {prismNote && <p className="mt-2 text-xs opacity-70">{prismNote}</p>}
-      {error && <p className="mt-2 text-sm text-red-700 dark:text-red-300">{error}</p>}
     </div>
   );
 }

@@ -77,6 +77,17 @@ describe("settlement status", () => {
     expect(expected.find((e) => e.flow === "replacement")!.amount).toBe(dollars(22_500));
   });
 
+  it("covers a leak from the unit's own defective fitting", () => {
+    const plan = verifyProtectionPlan(scenario.diagnostics, scenario.protectionPlan);
+    expect(scenario.diagnostics.liquidDamage).toBe(true);
+    expect(plan.verified).toBe(true);
+  });
+
+  it("does not cover liquid from an outside source", () => {
+    const s = withScenario((x) => { x.diagnostics.liquidSource = "external"; });
+    expect(verifyProtectionPlan(s.diagnostics, s.protectionPlan).verified).toBe(false);
+  });
+
   it("rejects a failure outside the plan term", () => {
     const s = withScenario((x) => { x.diagnostics.failureDate = "2027-03-01"; });
     expect(verifyProtectionPlan(s.diagnostics, s.protectionPlan).verified).toBe(false);

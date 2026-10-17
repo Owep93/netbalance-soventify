@@ -6,6 +6,12 @@ export interface Scenario {
   simulated: true;
   seller: { name: string };
   customer: { name: string; description: string; site: { city: string; state: string; zip: string } };
+  // The rack named on the support call. One unit failed; the rest passed inspection.
+  rack: { id: string; model: string; units: { slot: number; serial: string }[] };
+  // What the customer uploads through the support portal after the call (simulated).
+  portalUpload: { photos: string[]; unitNearestLeak: string };
+  // Technician dispatch promised on the support call (simulated).
+  dispatch: { technicianEta: string; simulated: true };
   failedUnit: {
     model: string;
     serial: string;
@@ -20,6 +26,9 @@ export interface Scenario {
     summary: string;
     physicalDamage: boolean;
     liquidDamage: boolean;
+    // Where any liquid came from. Leaks from the unit's own defective part are a covered
+    // defect; external liquid (spills, facility plumbing) is excluded by the plan.
+    liquidSource: "none" | "unit defect" | "external";
   };
   protectionPlan: {
     id: string;
@@ -58,41 +67,63 @@ export interface Scenario {
   };
 }
 
+const RACK_SERIALS = [
+  "HX80-12-01-0864", "HX80-12-02-0865", "HX80-12-03-0867", "HX80-12-04-0869",
+  "HX80-12-05-0871", "HX80-12-06-0872", "HX80-12-07-0874", "HX80-12-08-0876",
+];
+const FAILED_SERIAL = RACK_SERIALS[4];
+
 export const scenario: Scenario = {
   simulated: true,
-  seller: { name: "NetBalance GPU Services" },
+  seller: { name: "Helix GPU Support" },
   customer: {
     name: "Halcyon Compute",
     description: "Small AI company running its own GPU racks",
     site: { city: "Secaucus", state: "NJ", zip: "07094" },
   },
+  rack: {
+    id: "Rack 12",
+    model: "HX80",
+    units: RACK_SERIALS.map((serial, i) => ({ slot: i + 1, serial })),
+  },
+  portalUpload: {
+    photos: [
+      "Cooling-line connection at slot 5, coolant beading at the fitting (simulated)",
+      "Coolant residue on the rack drip tray below slot 5 (simulated)",
+    ],
+    unitNearestLeak: FAILED_SERIAL,
+  },
+  dispatch: { technicianEta: "2:00 PM today", simulated: true },
   failedUnit: {
-    model: "GX-400",
-    serial: "GX4-23-00871",
+    model: "HX80",
+    serial: FAILED_SERIAL,
     weight: { value: 1.7, unit: "kg", source: "Intake scale reading (simulated)", simulated: true },
   },
   diagnostics: {
     reportId: "DX-7781",
-    serial: "GX4-23-00871",
-    failureDate: "2026-10-16",
-    failureCategory: "memory failure",
-    summary: "Uncorrectable ECC errors on two memory stacks, then thermal shutdown under load.",
+    serial: FAILED_SERIAL,
+    failureDate: "2026-10-17",
+    failureCategory: "cooling fitting defect",
+    summary:
+      "Coolant leak traced to a cracked factory quick-disconnect fitting on the HX80 in slot 5. " +
+      "Coolant reached that card, which no longer powers on. The other seven HX80s in Rack 12 passed inspection.",
     physicalDamage: false,
-    liquidDamage: false,
+    liquidDamage: true,
+    liquidSource: "unit defect",
   },
   protectionPlan: {
     id: "PP-55120",
     provider: "Sentinel Hardware Protection",
-    serial: "GX4-23-00871",
+    serial: FAILED_SERIAL,
     start: "2024-03-01",
     end: "2027-02-28",
-    coveredCategories: ["memory failure", "power delivery failure", "thermal failure"],
+    coveredCategories: ["cooling fitting defect", "memory failure", "power delivery failure", "thermal failure"],
     credit: dollars(12_000),
   },
   replacement: {
-    likeForLike: { model: "GX-400", price: dollars(18_000) },
+    likeForLike: { model: "HX80", price: dollars(18_000) },
     upgrade: {
-      model: "GX-500",
+      model: "HX90",
       price: dollars(22_000),
       why: "Newer generation that uses less energy for the same workload.",
     },
@@ -101,7 +132,8 @@ export const scenario: Scenario = {
   resale: {
     marketplace: "Agora",
     listingId: "AGR-3001",
-    condition: "Refurbished, grade A: memory stacks replaced, burn-in tested 24 hours (simulated)",
+    condition:
+      "Refurbished, grade A: board cleaned and inspected, cooling fitting replaced, burn-in tested 24 hours (simulated)",
     askingPrice: dollars(5_200),
     feeRate: 0.1,
     simulatedBids: [

@@ -1,6 +1,6 @@
 import { runChecks } from "@/agent/checks";
 import { runAgent } from "@/agent/run";
-import { sendToPrism } from "@/lib/prism";
+import { describeGuardrail, evaluateGuardrail, sendToPrism, type GuardrailVerdict } from "@/lib/prism";
 import { agora } from "@/agora/market";
 import type { IntakeReport } from "@/core/intake";
 import { scenario } from "@/core/scenario";
@@ -16,6 +16,19 @@ export async function POST(req: Request) {
       const send = (obj: unknown) => controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
       try {
         agora.reset();
+        const guardrails: GuardrailVerdict[] = [];
+
+        // Input guardrail: the caller's report is untrusted text going into the model.
+        if (body.intake) {
+          const v = await evaluateGuardrail("input", `${body.intake.company}. ${body.intake.symptoms}`);
+          guardrails.push(v);
+          send({ type: "guardrail", verdict: v, text: describeGuardrail(v) });
+          if (v.blocked) {
+            send({ type: "error", message: "PRISM guardrails blocked the caller's report, so the recovery agent did not run." });
+            return;
+          }
+        }
+
         const run = await runAgent({
           scenario,
           complete: nicrronComplete(),
@@ -24,9 +37,15 @@ export async function POST(req: Request) {
           intake: body.intake,
           onEvent: (event) => send({ type: "event", event }),
         });
+        // Output guardrail: the summary the customer will read.
+        const out = await evaluateGuardrail("output", run.summary);
+        guardrails.push(out);
+        send({ type: "guardrail", verdict: out, text: describeGuardrail(out) });
+        if (out.blocked) run.summary = "This summary was withheld by PRISM guardrails pending review.";
+
         const checks = runChecks(run);
         send({ type: "checks", checks });
-        const prism = await sendToPrism(run, checks);
+        const prism = await sendToPrism(run, checks, guardrails);
         send({
           type: "done",
           summary: run.summary,

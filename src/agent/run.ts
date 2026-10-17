@@ -79,8 +79,8 @@ export async function runAgent(opts: {
   const prompt = {
     system: systemPrompt(s),
     user: opts.intake
-      ? `Failure report from the voice line. Company: ${opts.intake.company}. Serial: ${opts.intake.serial}. What happened: "${opts.intake.symptoms}"`
-      : `Failure report call from ${s.customer.name}: "Our ${s.failedUnit.model}, serial ${s.failedUnit.serial}, started throwing memory errors and then shut itself down under load."`,
+      ? `Incident from the support line, with the customer's support portal upload. Company: ${opts.intake.company}. Unit nearest the leak: ${opts.intake.serial}. Details: ${opts.intake.symptoms}`
+      : `Incident from ${s.customer.name}: coolant leak in ${s.rack.id} (${s.rack.units.length} ${s.rack.model} GPUs) near a cooling-line connection. Everyone is safe and the rack is offline. Portal upload names ${s.portalUpload.unitNearestLeak} as the unit nearest the leak.`,
   };
   const messages: Message[] = [
     { role: "system", content: prompt.system },

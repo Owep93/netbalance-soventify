@@ -25,7 +25,13 @@ function config() {
 const text = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 
 /** Builds the three PRISM payloads. Pure, so it can be tested without a network. */
-export function buildPrismPayloads(run: AgentRun, checks: Check[], projectId: string, traceId: string) {
+export function buildPrismPayloads(
+  run: AgentRun,
+  checks: Check[],
+  projectId: string,
+  traceId: string,
+  guardrails: GuardrailVerdict[] = [],
+) {
   const failed = checks.filter((c) => !c.passed);
   const tokensIn = run.trace.reduce((n, e) => n + (e.tokensIn ?? 0), 0);
   const tokensOut = run.trace.reduce((n, e) => n + (e.tokensOut ?? 0), 0);
@@ -43,6 +49,7 @@ export function buildPrismPayloads(run: AgentRun, checks: Check[], projectId: st
     avoided_kg_co2e: run.report?.carbon.kgCo2e ?? null,
     unsupported_figures: run.unsupportedFigures,
     refused_steps: run.trace.filter((e) => e.kind === "tool" && !e.ok).map((e) => e.name),
+    guardrails: guardrails.map((g) => ({ direction: g.direction, evaluated: g.evaluated, blocked: g.blocked, reason: g.reason })),
   };
 
   const trace = {
@@ -129,7 +136,11 @@ export function buildPrismPayloads(run: AgentRun, checks: Check[], projectId: st
   return { trace, spans, trajectory };
 }
 
-export async function sendToPrism(run: AgentRun, checks: Check[]): Promise<PrismResult> {
+export async function sendToPrism(
+  run: AgentRun,
+  checks: Check[],
+  guardrails: GuardrailVerdict[] = [],
+): Promise<PrismResult> {
   const traceId = randomUUID();
   const result: PrismResult = { traceId, sent: { trace: false, spans: false, trajectory: false }, errors: [] };
   const cfg = config();
@@ -138,7 +149,7 @@ export async function sendToPrism(run: AgentRun, checks: Check[]): Promise<Prism
     return result;
   }
 
-  const payloads = buildPrismPayloads(run, checks, cfg.projectId, traceId);
+  const payloads = buildPrismPayloads(run, checks, cfg.projectId, traceId, guardrails);
   const post = async (name: keyof PrismResult["sent"], path: string, body: unknown) => {
     try {
       const res = await fetch(`${cfg.host}${path}`, {
@@ -191,4 +202,53 @@ export async function sendVoiceTurns(conversationId: string, turns: VoiceTurn[])
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export interface GuardrailVerdict {
+  direction: "input" | "output";
+  evaluated: boolean;
+  blocked: boolean;
+  reason: string | null;
+  details: Record<string, unknown>;
+}
+
+/**
+ * Checks text against the project's PRISM guardrail rules. Free to call. On a plan without
+ * guardrails PRISM answers evaluated: false and lets the text through (fail-open); callers
+ * must show that as "not evaluated", never as "passed".
+ */
+export async function evaluateGuardrail(
+  direction: "input" | "output",
+  content: string,
+  traceId?: string,
+): Promise<GuardrailVerdict> {
+  const cfg = config();
+  const verdict = (evaluated: boolean, blocked: boolean, reason: string | null, details = {}) =>
+    ({ direction, evaluated, blocked, reason, details }) as GuardrailVerdict;
+  if (!cfg) return verdict(false, false, "PRISM is not configured");
+  try {
+    const res = await fetch(`${cfg.host}/api/guardrails/evaluate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-PRISMtrace-Key": cfg.key },
+      body: JSON.stringify({
+        project_id: cfg.projectId,
+        direction,
+        messages: [{ role: direction === "input" ? "user" : "assistant", content }],
+        trace_id: traceId,
+        agent_id: "gpu-recovery-agent",
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) return verdict(false, false, `HTTP ${res.status}`, body);
+    const { evaluated, blocked, reason, ...rest } = body;
+    return verdict(evaluated === true, blocked === true, typeof reason === "string" ? reason : null, rest);
+  } catch (e) {
+    return verdict(false, false, e instanceof Error ? e.message : String(e));
+  }
+}
+
+export function describeGuardrail(v: GuardrailVerdict): string {
+  const side = v.direction === "input" ? "Caller report" : "Customer summary";
+  if (!v.evaluated) return `${side}: not evaluated by PRISM guardrails (${v.reason ?? "no reason given"})`;
+  return v.blocked ? `${side}: blocked by PRISM guardrails` : `${side}: passed PRISM guardrails`;
 }
