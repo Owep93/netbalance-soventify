@@ -17,10 +17,10 @@ Netbalance coordinates warranty credits, replacement funding, and GPU resale, th
 ## How It Works
 
 **1.** A customer reports a cooling leak, and the agent coordinates assistance.
-**2.** The inspection identifies a **$200K warranty credit** for the container and racks. The damaged GPUs are excluded.
+**2.** The inspection identifies a **$12,000 warranty credit** for the failed unit under its protection plan.
 **3.** PRISM requests human approval before transferring the credit between accounts.
-**4.** The customer compares replacement options, using the warranty credit and optional GPU financing.
-**5.** Netbalance records the financing referral fee and selects the GPU resale offer with the highest net proceeds after shipping.
+**4.** The customer compares replacement options, a like-for-like HX80 at $18,000 or the HX90 upgrade at $22,000, using the warranty credit.
+**5.** Netbalance selects the GPU resale offer with the highest net proceeds after shipping.
 **6.** It reconciles the transactions and shows the CFO the contribution, cash received, and outstanding balance.
 
 ## Tools
@@ -33,16 +33,15 @@ Protect margins, improve cash visibility, and reduce the manual work required to
 
 ## Demo KPIs
 
-- **$200K** — Warranty credit applied
-- **$620K** — Replacement invoice fully funded
-- **$2K** — Financing referral earned
-- **$30K** — Net GPU resale proceeds
-- **$62K** — Additional contribution versus the baseline
-- **4** — Transaction types reconciled
+- **$12,000** — Warranty credit applied
+- **$22,500** — Replacement sale ($22,000 HX90 + $500 installation)
+- **$4,500** — Net resale proceeds (best of 3 Agora bids, net of fee)
+- **$1,008/mo** — Avoided energy cost (HX90 vs HX80 on the metered baseline)
+- **3** — Money flows reconciled (replacement, warranty, resale)
 - **$0** — Outstanding
 
 ## Verified Outcome
 
-The CFO sees **$652K in total receipts** and **$192K in contribution**, with supporting records for every reconciled transaction. Warranty and financing funds are included in the replacement invoice settlement.
+The CFO sees **$27,000 in total matched receipts** across 3 reconciled flows, with supporting records for every transaction. The warranty credit is applied on the replacement invoice, not counted twice.
 
 All transactions, integrations, and financial outcomes are simulated for the demo.
