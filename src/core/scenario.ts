@@ -35,7 +35,16 @@ export interface Scenario {
     upgrade: { model: string; price: Cents; why: string };
     installation: Cents;
   };
-  resale: { marketplace: string; listingId: string; netPayout: Cents; buyer: string };
+  resale: {
+    marketplace: string;
+    listingId: string;
+    condition: string;
+    askingPrice: Cents;
+    feeRate: number;
+    simulatedBids: { buyer: string; amount: Cents }[];
+    // Expected net payout: highest bid minus the Agora fee. A test keeps these in step.
+    netPayout: Cents;
+  };
   ids: { invoice: string; warrantyClaim: string };
   receipts: { id: string; payer: string; reference: string; amount: Cents; receivedOn: string; simulated: true }[];
   energy: {
@@ -92,8 +101,15 @@ export const scenario: Scenario = {
   resale: {
     marketplace: "Agora",
     listingId: "AGR-3001",
+    condition: "Refurbished, grade A: memory stacks replaced, burn-in tested 24 hours (simulated)",
+    askingPrice: dollars(5_200),
+    feeRate: 0.1,
+    simulatedBids: [
+      { buyer: "Brightline Labs (simulated)", amount: dollars(4_200) },
+      { buyer: "Coldwater Compute (simulated)", amount: dollars(4_750) },
+      { buyer: "Parallel Refurb Co (simulated)", amount: dollars(5_000) },
+    ],
     netPayout: dollars(4_500),
-    buyer: "Refurbished hardware buyer (simulated)",
   },
   ids: { invoice: "INV-1001", warrantyClaim: "CLM-2001" },
   receipts: [

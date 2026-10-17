@@ -35,7 +35,38 @@ Every carbon number follows these rules:
   through it: orchestration, diagnostic and policy interpretation, upgrade explanations.
 - PRISM by Block Convey: traces agent actions; tests coverage, calculations, settlement
   status, and unsupported carbon claims. Demo improvement with repeated tests.
-- Agora: the reseller market where the refurbished failed unit is listed and sold.
+- Agora: the reseller market where the refurbished failed unit is listed and sold. It is
+  simulated in-app (`src/agora/market.ts`, page `/agora`, API `/api/agora`) and labeled as
+  simulated. Agora only allows accepting the highest bid; payout = bid minus fee.
+
+## Agent
+- `src/agent/run.ts` is the loop; `src/agent/tools.ts` holds the tools. Tools refuse to run
+  out of order (no credit before the plan verifies, no Agora listing before refurbishing).
+- LLM calls go through Nicrron (`src/lib/nicrron.ts`, OpenAI SDK, base URL
+  `https://api.nicrron.ai/v1`), pinned to `anthropic/claude-sonnet-5-5` with
+  `openai/gpt-6-sol` as fallback. Avoid DeepSeek and Kimi: they may train on API data.
+- Every step is a `TraceEvent` (the PRISM feed). The summary is checked for dollar and kg
+  figures that no tool returned (`unsupportedFigures`).
+- Keys live in `.env.local` (gitignored). `.env.example` lists the variables.
+
+## ElevenLabs voice intake
+- Agent "GPU Recovery Intake" was created by `scripts/setup-elevenlabs-agent.mjs` (Claude Sonnet
+  5.5, two client tools: `open_recovery_case`, `book_installation`). Its id is
+  `ELEVENLABS_AGENT_ID` in `.env.local`. The "Netbalance CFO" agent on the account is unrelated;
+  leave it alone.
+- The browser gets a signed URL from `/api/voice/session`; the API key never reaches the client.
+  `open_recovery_case` checks the serial via `/api/intake`, then starts the recovery agent with
+  what the caller said. The transcript goes to PRISM `/api/voice/turns` when the call ends.
+- The key needs ElevenLabs Agents read and write permissions.
+
+## PRISM (Block Convey)
+- Each run sends a trace, spans, and a trajectory (`src/lib/prism.ts`), with the checks in
+  `src/agent/checks.ts` (coverage, calculation, settlement, carbon claims, house rules) as metadata.
+- Auth header is `X-PRISMtrace-Key`, not Bearer. Start any investigation with
+  `GET /api/setup-doctor?project_id=...`. Full route list: `/openapi.json` (needs the header).
+- Reads and ingestion are free. Analysis, backfill, narrative, and generate-fix spend credits:
+  never call them without stating the cost and getting a yes. Check
+  `GET /api/credits/balance?org_id=...` first. A 402 means out of credits; stop, do not retry.
 
 ## Build decisions
 - Next.js + TypeScript, run locally for the demo. No Vercel or other hosting.

@@ -4,6 +4,7 @@ import { buildRecoveryReport } from "@/core/report";
 import { scenario } from "@/core/scenario";
 import { fetchEpaFactors } from "@/lib/epa";
 import { connection } from "next/server";
+import { AgentRunner } from "./agent-runner";
 
 function SourceLine({ factor }: { factor: EmissionFactor }) {
   const s = factor.source;
@@ -74,6 +75,8 @@ export default async function Home() {
           Demo data. Approvals, bids, pickup, meter readings, and payments are simulated.
         </p>
       </header>
+
+      <AgentRunner />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-black/10 p-5 dark:border-white/15">
