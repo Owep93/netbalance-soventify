@@ -1,10 +1,21 @@
-import type { CarbonSide } from "@/core/carbon";
+import type { CarbonSide, EmissionFactor } from "@/core/carbon";
 import { formatUsd } from "@/core/money";
 import { buildRecoveryReport } from "@/core/report";
 import { scenario } from "@/core/scenario";
+import { fetchEpaFactors } from "@/lib/epa";
+import { connection } from "next/server";
 
-// EPA factors are not wired yet, so carbon shows as pending rather than a guessed number.
-const report = buildRecoveryReport(scenario, { manufacturing: null, refurbishing: null, grid: null });
+function SourceLine({ factor }: { factor: EmissionFactor }) {
+  const s = factor.source;
+  return (
+    <li>
+      {s.authority}, {s.edition}. {s.table}, row &quot;{s.row}&quot;. Value {factor.value}{" "}
+      {factor.unit.co2e} CO2e per {factor.unit.per}.{" "}
+      <a className="underline" href={s.url} target="_blank" rel="noreferrer">{s.url}</a>{" "}
+      <span className="opacity-60">Retrieved {new Date(s.retrievedAt).toLocaleString("en-US")}</span>
+    </li>
+  );
+}
 
 function StatusPill({ status }: { status: string }) {
   const tone =
@@ -34,15 +45,22 @@ function SideCard({ side }: { side: CarbonSide }) {
       </div>
       <p className="text-sm opacity-70">Activity family: {side.family}</p>
       <p className="mt-2 text-2xl font-semibold">
-        {side.kgCo2e === null ? "Pending" : `${side.kgCo2e.toFixed(1)} kg CO2e`}
+        {side.kgCo2e === null ? "Pending" : `${side.kgCo2e.toFixed(side.kgCo2e < 1 ? 2 : 1)} kg CO2e`}
       </p>
       <p className="mt-1 text-xs opacity-70">{side.method}</p>
     </div>
   );
 }
 
-export default function Home() {
+export default async function Home() {
+  // EPA factors are fetched at calculation time, so render on every request.
+  await connection();
+  const epa = await fetchEpaFactors(scenario.customer.site.zip);
+  const report = buildRecoveryReport(scenario, epa.factors);
   const { reconciliation: r, carbon, energy, plan } = report;
+  const sources = [epa.factors.manufacturing, epa.factors.refurbishing, epa.factors.grid].filter(
+    (f): f is EmissionFactor => f !== null,
+  );
   const weight = scenario.failedUnit.weight;
 
   return (
@@ -150,6 +168,13 @@ export default function Home() {
           <SideCard side={carbon.manufacturing} />
           <SideCard side={carbon.refurbishing} />
         </div>
+        <div className="mt-4 flex items-center justify-between rounded-lg border border-black/10 p-4 dark:border-white/15">
+          <span className="font-medium">Avoided CO2e (manufacturing minus refurbishing)</span>
+          <span className="flex items-center gap-2 text-xl font-semibold">
+            {carbon.kgCo2e === null ? "Pending" : `${carbon.kgCo2e.toFixed(1)} kg`}
+            <StatusPill status={carbon.status} />
+          </span>
+        </div>
         {carbon.pendingReasons.length > 0 && (
           <div className="mt-4 text-sm">
             <p className="font-medium">Why this is pending</p>
@@ -158,6 +183,60 @@ export default function Home() {
             </ul>
           </div>
         )}
+        <p className="mt-4 text-xs opacity-70">
+          Limits: EPA has no refurbishment pathway, so the refurbishing side uses the EPA end-of-life
+          recycling factor (collection, transport, processing) as the closest proxy, and the energy used to
+          refurbish is not included. Mixed Electronics is a general category, not a GPU-specific one.
+        </p>
+      </Section>
+
+      <Section title="Energy bonus">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="text-sm">
+            <p>
+              Baseline {energy.baselineKwhPerJob} kWh per job on the old unit, {energy.upgradeKwhPerJob} kWh on
+              the replacement, {energy.jobsPerMonth.toLocaleString("en-US")} jobs per month.
+            </p>
+            <p className="mt-1 opacity-70">{energy.meterSource}. Rate: {energy.rateSource}.</p>
+            <p className="mt-3 text-2xl font-semibold">
+              {energy.avoidedKwhPerMonth.toLocaleString("en-US")} kWh and {formatUsd(energy.avoidedCostPerMonth)} avoided per month
+            </p>
+          </div>
+          <div className="rounded-lg bg-black/[0.03] p-4 dark:bg-white/[0.05]">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="font-medium">Avoided grid CO2e per month</span>
+              <StatusPill status={energy.carbon.status} />
+            </div>
+            <p className="mt-2 text-2xl font-semibold">
+              {energy.carbon.kgCo2ePerMonth === null
+                ? "Pending"
+                : `${Math.round(energy.carbon.kgCo2ePerMonth).toLocaleString("en-US")} kg CO2e`}
+            </p>
+            <p className="mt-1 text-xs opacity-70">{energy.carbon.method}</p>
+            {energy.carbon.pendingReasons.length > 0 && (
+              <ul className="mt-2 list-disc pl-5 text-xs opacity-80">
+                {energy.carbon.pendingReasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+            )}
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Sources">
+        <ul className="space-y-2 text-sm">
+          {sources.map((f) => <SourceLine key={f.source.edition + f.source.row} factor={f} />)}
+        </ul>
+        {epa.errors.length > 0 && (
+          <div className="mt-3 text-sm text-red-700 dark:text-red-300">
+            <p className="font-medium">Could not fetch from the EPA, so the related figures stay pending</p>
+            <ul className="list-disc pl-5">
+              {epa.errors.map((e) => <li key={e}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+        <p className="mt-3 text-xs opacity-70">
+          Carbon figures are sourced estimates, not ESG compliance certification.
+        </p>
       </Section>
     </main>
   );

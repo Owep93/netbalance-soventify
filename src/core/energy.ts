@@ -23,7 +23,8 @@ export interface EnergyBonus {
 
 /** Avoided energy from metered kWh per job against the old unit as the baseline. */
 export function energyBonus(e: Scenario["energy"], gridFactor: EmissionFactor | null): EnergyBonus {
-  const avoidedKwhPerMonth = (e.baselineKwhPerJob - e.upgradeKwhPerJob) * e.jobsPerMonth;
+  const avoidedKwhPerMonth =
+    Math.round((e.baselineKwhPerJob - e.upgradeKwhPerJob) * e.jobsPerMonth * 1000) / 1000;
   const avoidedCostPerMonth = Math.round(avoidedKwhPerMonth * e.rateUsdPerKwh * 100);
 
   const pendingReasons = factorProblems(gridFactor, "electricity");
@@ -56,7 +57,7 @@ export function energyBonus(e: Scenario["energy"], gridFactor: EmissionFactor | 
       kgCo2ePerMonth: estimated ? avoidedKwhPerMonth * kgPerKwh! : null,
       factor: gridFactor,
       method: estimated
-        ? `${avoidedKwhPerMonth} kWh x ${kgPerKwh} kg CO2e per kWh ` +
+        ? `${avoidedKwhPerMonth} kWh x ${kgPerKwh!.toFixed(4)} kg CO2e per kWh ` +
           `(${gridFactor!.source.authority} ${gridFactor!.source.edition}, ${gridFactor!.category})` +
           (conversion ? `. ${conversion}` : "")
         : "Not calculated until the missing evidence is in place",

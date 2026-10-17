@@ -161,10 +161,13 @@ describe("carbon record", () => {
     expect(carbonSide({ label: "x", family: "materials", weight, factor: f }).status).toBe("pending");
   });
 
-  it("requires both sides to use the same source and edition", () => {
-    const other: EmissionFactor = { ...refurbishing, source: { ...testSource, edition: "other" } };
-    const c = avoidedCarbon({ ...base, manufacturingFactor: manufacturing, refurbishingFactor: other });
-    expect(c.status).toBe("pending");
+  it("requires both sides to use the same authority and material category", () => {
+    const otherAuthority: EmissionFactor = { ...refurbishing, source: { ...testSource, authority: "OTHER" } };
+    const otherCategory: EmissionFactor = { ...refurbishing, category: "Desktop CPUs" };
+    for (const f of [otherAuthority, otherCategory]) {
+      const c = avoidedCarbon({ ...base, manufacturingFactor: manufacturing, refurbishingFactor: f });
+      expect(c.status).toBe("pending");
+    }
   });
 
   it("never labels carbon as verified", () => {

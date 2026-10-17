@@ -155,11 +155,12 @@ export function avoidedCarbon(input: {
     ...refurbishing.pendingReasons.map((r) => `Refurbishing side: ${r}`),
   ];
 
-  const m = input.manufacturingFactor?.source;
-  const r = input.refurbishingFactor?.source;
-  if (m && r && (m.authority !== r.authority || m.edition !== r.edition)) {
+  // Same way on both sides: same authority, same material category, same kg x kg/kg method.
+  const m = input.manufacturingFactor;
+  const r = input.refurbishingFactor;
+  if (m && r && (m.source.authority !== r.source.authority || m.category !== r.category)) {
     pendingReasons.push(
-      "Both sides must be calculated the same way, but they use different sources or editions",
+      "Both sides must be calculated the same way, but they use a different authority or material category",
     );
   }
 

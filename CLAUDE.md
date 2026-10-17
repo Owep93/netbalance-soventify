@@ -44,6 +44,19 @@ Every carbon number follows these rules:
 - Scenario data (company, units, prices, simulated payments) lives in one file,
   `src/core/scenario.ts`, so the story can be changed without touching logic.
 - Tests: `npm test` (Vitest). The demo targets above are asserted in tests.
+- Next.js 16 here has Cache Components on: use `await connection()` for per-request
+  pages, not `export const dynamic`. Read `node_modules/next/dist/docs/` before Next APIs.
+
+## EPA data (fetched live by `src/lib/epa.ts`, read by label, never by row number)
+- Manufacturing side (materials): WARM v16, sheet `Summary Data`, `Mixed Electronics`,
+  column `Source Reduction`. WARM shows it as negative (avoided); its size is used.
+- Refurbishing side (waste): Emission Factors Hub 2025, Table 9, `Mixed Electronics`,
+  `Recycled` (no avoided-emission credit). EPA has no refurbishment pathway; this is the
+  closest proxy and the page says so. Do not use WARM's net recycling factor (double counts).
+- Both are MTCO2E per short ton, converted exactly to kg CO2e per kg.
+- Grid: zip to subregion via EPA Power Profiler (07094 is RFCE), then eGRID2023 rev2
+  Table 1 non-baseload CO2e in lb/MWh, which EPA points to for estimating reductions.
+- If a fetch or label lookup fails, that figure stays pending and the error is shown.
 
 ## House rules
 - Plain language in anything user-facing. Never use em-dashes.
